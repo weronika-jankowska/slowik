@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/* --- Rejestracja rodziny czcionek The Seasons --- */
+
+/* Regular */
+@font-face {
+  font-family: 'The Seasons';
+  src: url('./assets/fonts/The Seasons Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+}
+
+/* Bold */
+@font-face {
+  font-family: 'The Seasons';
+  src: url('./assets/fonts/The Seasons Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+/* Light */
+@font-face {
+  font-family: 'The Seasons';
+  src: url('./assets/fonts/The Seasons Light.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+}
+
+/* Italic */
+@font-face {
+  font-family: 'The Seasons';
+  src: url('./assets/fonts/The Seasons Italic.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+}
+
+/* Light Italic */
+@font-face {
+  font-family: 'The Seasons';
+  src: url('./assets/fonts/The Seasons Light Italic.ttf') format('truetype');
+  font-weight: 300;
+  font-style: italic;
+}
+
+/* Bold Italic */
+@font-face {
+  font-family: 'The Seasons';
+  src: url('./assets/fonts/The Seasons Bold Italic.ttf') format('truetype');
+  font-weight: 700;
+  font-style: italic;
+}
+
+
+/* --- Definicja klas użytkowych dla Tailwinda --- */
+@layer utilities {
+  .font-seasons {
+    font-family: 'The Seasons', serif;
+  }
+  .font-cardo {
+    font-family: 'Cardo', serif;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Cardo', serif;
+}
