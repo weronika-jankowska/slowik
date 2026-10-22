@@ -7,6 +7,12 @@ export interface VibratoAnalysisResult {
   hasVibrato: boolean;
 }
 
+export interface CPPResult {
+  cppDb: number;
+  f0CepstralHz: number;
+  quefrencySec: number;
+}
+
 export interface AcousticMetricsState {
   f0: number;
   rms: number;
@@ -15,6 +21,7 @@ export interface AcousticMetricsState {
   jitterPercent: number;
   shimmerDb: number;
   hnrDb: number;
+  cppDb: number;
   spectralNoiseDb: number;
   spectralCentroidHz: number;
   spectralRolloffHz: number;
@@ -73,6 +80,57 @@ function cubicAt(x: ArrayLike<number>, pos: number): number {
     p1 +
     0.5 * f * (p2 - p0 + f * (2 * p0 - 5 * p1 + 4 * p2 - p3 + f * (3 * (p1 - p2) + p3 - p0)))
   );
+}
+
+function fftRadix2(re: Float64Array, im: Float64Array, invert = false): void {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const tr = re[i] ?? 0;
+      re[i] = re[j] ?? 0;
+      re[j] = tr;
+      const ti = im[i] ?? 0;
+      im[i] = im[j] ?? 0;
+      im[j] = ti;
+    }
+  }
+
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = ((2 * Math.PI) / len) * (invert ? -1 : 1);
+    const wlenRe = Math.cos(ang);
+    const wlenIm = Math.sin(ang);
+    const half = len >> 1;
+
+    for (let i = 0; i < n; i += len) {
+      let wRe = 1.0;
+      let wIm = 0.0;
+      for (let j = 0; j < half; j++) {
+        const uRe = re[i + j] ?? 0;
+        const uIm = im[i + j] ?? 0;
+        const vRe = (re[i + j + half] ?? 0) * wRe - (im[i + j + half] ?? 0) * wIm;
+        const vIm = (re[i + j + half] ?? 0) * wIm + (im[i + j + half] ?? 0) * wRe;
+
+        re[i + j] = uRe + vRe;
+        im[i + j] = uIm + vIm;
+        re[i + j + half] = uRe - vRe;
+        im[i + j + half] = uIm - vIm;
+
+        const nextWRe = wRe * wlenRe - wIm * wlenIm;
+        wIm = wRe * wlenIm + wIm * wlenRe;
+        wRe = nextWRe;
+      }
+    }
+  }
+
+  if (invert) {
+    for (let i = 0; i < n; i++) {
+      re[i] = (re[i] ?? 0) / n;
+      im[i] = (im[i] ?? 0) / n;
+    }
+  }
 }
 
 export function calculateRMS(buffer: Float32Array): number {
@@ -183,6 +241,7 @@ export function extractGlottalCycles(
   const MIN_NCC = 0.5;
   const periods: number[] = [];
   const amps: number[] = [];
+  let prevS = -1;
   const y = new Float64Array(Ly);
   const cs = new Float64Array(Ly + 1);
   const r = new Float64Array(sMax + 3);
@@ -231,19 +290,25 @@ export function extractGlottalCycles(
     const h = 0.25;
     sEst += h * parabolicVertex(nccAt(sEst - h), nccAt(sEst), nccAt(sEst + h)).offset;
 
-    const cycleStart = Math.max(0, Math.floor(t));
-    const cycleEnd = Math.min(N - 1, Math.ceil(t + sEst));
-    let minVal = Infinity;
-    let maxVal = -Infinity;
-    for (let j = cycleStart; j <= cycleEnd; j++) {
-      const v = x[j] ?? 0;
-      if (v < minVal) minVal = v;
-      if (v > maxVal) maxVal = v;
+    const widthLeft = 0.2 * (prevS > 0 ? prevS : sEst);
+    const widthRight = 0.2 * sEst;
+    let sumSq = 0;
+    let winSumSq = 0;
+    const kLo = Math.max(0, Math.ceil(t - widthLeft));
+    const kHi = Math.min(N - 1, Math.floor(t + widthRight));
+    for (let k = kLo; k <= kHi; k++) {
+      const dtSamp = k - t;
+      const width = dtSamp < 0 ? widthLeft : widthRight;
+      const w = 0.5 + 0.5 * Math.cos((Math.PI * dtSamp) / width);
+      const v = (x[k] ?? 0) * w;
+      sumSq += v * v;
+      winSumSq += w * w;
     }
-    const peakToPeakAmp = maxVal > minVal ? maxVal - minVal : 0;
+    const cycleAmp = winSumSq > 0 ? Math.sqrt(sumSq / winSumSq) : 0;
+    prevS = sEst;
 
     periods.push(sEst / sampleRate);
-    amps.push(peakToPeakAmp);
+    amps.push(cycleAmp);
 
     t += sEst;
     const targetIdx = Math.round(t);
@@ -322,86 +387,413 @@ export function calculateJitterShimmerCycleToCycle(
   };
 }
 
-export function calculateHNR(
-  buffer: Float32Array,
-  sampleRate: number,
-  f0: number,
-  periodsPerWindow = 4.5,
-  minPitchHz = 75
-): number {
-  if (!(f0 > 0) || !(sampleRate > 0) || buffer.length < 32) return NaN;
-
-  const nWin = Math.min(buffer.length, Math.floor((periodsPerWindow / minPitchHz) * sampleRate));
-  const T0 = sampleRate / f0;
-  if (nWin < 3 * T0) return NaN;
-
-  const minLag = Math.max(2, Math.floor(0.75 * T0));
-  const maxLag = Math.min(nWin - 2, Math.ceil(1.25 * T0));
-  if (maxLag - minLag < 3) return NaN;
-
-  const w = new Float64Array(nWin);
-  const xw = new Float64Array(nWin);
-  let mean = 0;
-  for (let i = 0; i < nWin; i++) mean += buffer[i] ?? 0;
-  mean /= nWin;
-  let rxw0 = 0;
-  let rw0 = 0;
-  for (let i = 0; i < nWin; i++) {
-    const wi = 0.5 - 0.5 * Math.cos((2 * Math.PI * (i + 1)) / (nWin + 1));
-    w[i] = wi;
-    const v = ((buffer[i] ?? 0) - mean) * wi;
-    xw[i] = v;
-    rxw0 += v * v;
-    rw0 += wi * wi;
-  }
-  if (rxw0 <= 1e-15) return NaN;
-
-  const r = new Float64Array(maxLag + 2);
-  for (let lag = minLag - 1; lag <= maxLag + 1; lag++) {
-    let sx = 0;
-    let sw = 0;
-    for (let i = 0; i < nWin - lag; i++) {
-      sx += (xw[i] ?? 0) * (xw[i + lag] ?? 0);
-      sw += (w[i] ?? 0) * (w[i + lag] ?? 0);
-    }
-    const rw = sw / rw0;
-    r[lag] = rw > 1e-9 ? sx / rxw0 / rw : 0;
-  }
-
-  let bestLag = minLag;
-  let best = -Infinity;
-  for (let lag = minLag; lag <= maxLag; lag++) {
-    if ((r[lag] ?? 0) > best) {
-      best = r[lag] ?? 0;
-      bestLag = lag;
-    }
-  }
-
-  let strength = best;
-  if (bestLag > minLag && bestLag < maxLag) {
-    strength = parabolicVertex(r[bestLag - 1] ?? 0, r[bestLag] ?? 0, r[bestLag + 1] ?? 0).value;
-  }
-  if (strength > 1) strength = 1 / strength;
-
-  if (strength <= 1e-15) return -150;
-  if (strength >= 1 - 1e-15) return 150;
-  return Math.round(10 * Math.log10(strength / (1 - strength)) * 10) / 10;
+// ---------------------------------------------------------------------------
+// HNR — algorytm zgodny z Praat: Sound ▸ To Harmonicity (ac)
+//   1. okno Hanninga o długości (periodsPerWindow / pitchFloor), domyślnie 4.5 / 75 Hz = 60 ms,
+//   2. odjęcie średniej ramki, autokorelacja (FFT, zero-padding),
+//   3. normalizacja r(τ)/r(0) i KOREKTA OKNA: dzielenie przez znormalizowaną autokorelację okna,
+//   4. maksimum r w zakresie lagów [1/pitchCeiling, 1/pitchFloor] z interpolacją paraboliczną
+//      (z kosztem oktawowym 0.01/oktawę, jak w Praat),
+//   5. HNR = 10·log10(r / (1 − r)); ramki niezvoiced (cisza / r poniżej progu) są pomijane,
+//   6. wynik pliku = ŚREDNIA z ramek dźwięcznych (tak jak "Get mean" w Praat).
+// ---------------------------------------------------------------------------
+export interface HarmonicityOptions {
+  /** 'cc' = Praat „To Harmonicity (cc)”, 'ac' = „To Harmonicity (ac)”. Domyślnie 'cc'. */
+  method?: 'cc' | 'ac';
+  pitchFloor?: number; // Hz, domyślnie 75 (Praat). Dla niskich głosów można dać 60.
+  pitchCeiling?: number; // Hz, domyślnie 600 (dla sopranu/śpiewu można podnieść do 1000+)
+  timeStep?: number; // s, domyślnie 0.01
+  silenceThreshold?: number; // względem globalnego piku, domyślnie 0.1
+  voicingThreshold?: number; // domyślnie 0.45
+  periodsPerWindow?: number; // domyślnie: cc → 1.0, ac → 4.5 (jak w Praat)
+  octaveCost?: number; // domyślnie 0.01
 }
 
-export function calculateSpectralNoise(
-  analyser: AnalyserNode,
+export interface HarmonicityResult {
+  meanDb: number;
+  medianDb: number;
+  voicedFrames: number;
+  totalFrames: number;
+  frameDb: number[]; // NaN dla ramek niedźwięcznych
+  frameTimesSec: number[];
+  frameF0Hz: number[];
+}
+
+function nextPow2(n: number): number {
+  let p = 1;
+  while (p < n) p <<= 1;
+  return p;
+}
+
+function hannWindow(n: number): Float64Array {
+  const w = new Float64Array(n);
+  for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * (i + 0.5)) / n);
+  return w;
+}
+
+/** Autokorelacja przez FFT. Wynik w `re` (nieznormalizowany). */
+function autocorrInPlace(re: Float64Array, im: Float64Array): void {
+  fftRadix2(re, im, false);
+  for (let i = 0; i < re.length; i++) {
+    re[i] = (re[i] ?? 0) * (re[i] ?? 0) + (im[i] ?? 0) * (im[i] ?? 0);
+    im[i] = 0;
+  }
+  fftRadix2(re, im, true);
+}
+
+interface HarmonicityPeak {
+  strength: number; // r po korekcie okna (maks. interpolowane)
+  lag: number; // w próbkach (ułamkowy)
+}
+
+/**
+ * Szuka najlepszego maksimum znormalizowanej autokorelacji `r` w [minLag, maxLag].
+ * `r[0]` = 1. Zwraca NaN-strength, jeśli nie ma żadnego maksimum lokalnego > 0.
+ */
+function bestAutocorrPeak(
+  r: Float64Array,
+  minLag: number,
+  maxLag: number,
+  sampleRate: number,
+  pitchFloor: number,
+  octaveCost: number
+): HarmonicityPeak {
+  let best: HarmonicityPeak = { strength: NaN, lag: NaN };
+  let bestScore = -Infinity;
+  const hi = Math.min(maxLag, r.length - 2);
+  for (let l = Math.max(2, minLag); l <= hi; l++) {
+    const c = r[l] ?? 0;
+    if (!(c > 0) || !(c > (r[l - 1] ?? 0)) || !(c >= (r[l + 1] ?? 0))) continue;
+    const pv = parabolicVertex(r[l - 1] ?? 0, c, r[l + 1] ?? 0);
+    const lag = l + pv.offset;
+    const strength = pv.value;
+    const score = strength - octaveCost * Math.log2((pitchFloor * lag) / sampleRate);
+    if (score > bestScore) {
+      bestScore = score;
+      best = { strength, lag };
+    }
+  }
+  return best;
+}
+
+function strengthToHnrDb(r: number): number {
+  const rr = Math.min(r, 1 - 1e-10);
+  if (!(rr > 1e-10)) return NaN;
+  return 10 * Math.log10(rr / (1 - rr));
+}
+
+/** Wspólny rdzeń: jedna ramka (już wycięta, bez okna) → { strength, lag, localPeak }. */
+function harmonicityFrameCore(
+  frame: ArrayLike<number>,
+  sampleRate: number,
+  win: Float64Array,
+  winAc: Float64Array,
+  nFft: number,
+  re: Float64Array,
+  im: Float64Array,
+  minLag: number,
+  maxLag: number,
+  pitchFloor: number,
+  octaveCost: number
+): { peak: HarmonicityPeak; localPeak: number } {
+  const n = win.length;
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += frame[i] ?? 0;
+  mean /= n;
+
+  re.fill(0);
+  im.fill(0);
+  let localPeak = 0;
+  for (let i = 0; i < n; i++) {
+    const v = (frame[i] ?? 0) - mean;
+    const a = Math.abs(v);
+    if (a > localPeak) localPeak = a;
+    re[i] = v * (win[i] ?? 0);
+  }
+  autocorrInPlace(re, im);
+
+  const r0 = re[0] ?? 0;
+  if (!(r0 > 1e-20)) return { peak: { strength: NaN, lag: NaN }, localPeak };
+
+  const rCorr = new Float64Array(Math.min(nFft >> 1, maxLag + 3));
+  for (let l = 0; l < rCorr.length; l++) {
+    const rw = winAc[l] ?? 0;
+    rCorr[l] = rw > 1e-3 ? (re[l] ?? 0) / r0 / rw : 0;
+  }
+  return { peak: bestAutocorrPeak(rCorr, minLag, maxLag, sampleRate, pitchFloor, octaveCost), localPeak };
+}
+
+function windowNormAutocorr(win: Float64Array, nFft: number): Float64Array {
+  const re = new Float64Array(nFft);
+  const im = new Float64Array(nFft);
+  re.set(win);
+  autocorrInPlace(re, im);
+  const out = new Float64Array(nFft >> 1);
+  const r0 = re[0] ?? 1;
+  for (let i = 0; i < out.length; i++) out[i] = (re[i] ?? 0) / r0;
+  return out;
+}
+
+/**
+ * Ramka metody „cc” (Praat): znormalizowana korelacja wzajemna między odcinkiem x (długość n)
+ * a tym samym odcinkiem przesuniętym o `lag`, bez okna. r[lag] = Σ x·y / sqrt(Σx² · Σy²).
+ * Wylicza r[0..maxLag+2] przez FFT. Próbki poza sygnałem = 0.
+ */
+function crossCorrelationFrame(
+  sig: ArrayLike<number>,
+  start: number,
+  n: number,
+  maxLag: number,
+  nFft: number,
+  reA: Float64Array,
+  imA: Float64Array,
+  reB: Float64Array,
+  imB: Float64Array
+): { r: Float64Array; localPeak: number } {
+  const L = n + maxLag + 2;
+  const N = sig.length;
+  reA.fill(0); imA.fill(0); reB.fill(0); imB.fill(0);
+
+  let mean = 0;
+  for (let j = 0; j < L; j++) {
+    const idx = start + j;
+    mean += idx >= 0 && idx < N ? (sig[idx] ?? 0) : 0;
+  }
+  mean /= L;
+
+  const cs = new Float64Array(L + 1);
+  let localPeak = 0;
+  for (let j = 0; j < L; j++) {
+    const idx = start + j;
+    const v = (idx >= 0 && idx < N ? (sig[idx] ?? 0) : 0) - mean;
+    reB[j] = v;
+    cs[j + 1] = (cs[j] ?? 0) + v * v;
+    if (j < n) {
+      reA[j] = v;
+      const a = Math.abs(v);
+      if (a > localPeak) localPeak = a;
+    }
+  }
+  fftRadix2(reA, imA, false);
+  fftRadix2(reB, imB, false);
+  for (let i = 0; i < nFft; i++) {
+    // conj(A) · B
+    const ar = reA[i] ?? 0, ai = imA[i] ?? 0, br = reB[i] ?? 0, bi = imB[i] ?? 0;
+    reA[i] = ar * br + ai * bi;
+    imA[i] = ar * bi - ai * br;
+  }
+  fftRadix2(reA, imA, true);
+
+  const sx = cs[n] ?? 0;
+  const r = new Float64Array(maxLag + 3);
+  for (let lag = 0; lag < r.length; lag++) {
+    const sy = (cs[Math.min(L, n + lag)] ?? 0) - (cs[lag] ?? 0);
+    const den = Math.sqrt(sx * sy);
+    r[lag] = den > 1e-20 ? (reA[lag] ?? 0) / den : 0;
+  }
+  r[0] = 1;
+  return { r, localPeak };
+}
+
+/**
+ * HNR całego sygnału w stylu Praat (To Harmonicity (ac) + Get mean).
+ * Dla porównania z Praat/parselmouth używaj tych samych parametrów
+ * (domyślnie: timeStep 0.01, pitchFloor 75, silenceThreshold 0.1, periodsPerWindow 4.5).
+ */
+export function analyzeHarmonicity(
+  signal: ArrayLike<number>,
+  sampleRate: number,
+  opts: HarmonicityOptions = {}
+): HarmonicityResult {
+  const method = opts.method ?? 'cc';
+  const pitchFloor = opts.pitchFloor ?? 75;
+  const pitchCeiling = opts.pitchCeiling ?? 600;
+  const timeStep = opts.timeStep ?? 0.01;
+  const silenceThreshold = opts.silenceThreshold ?? 0.1;
+  const voicingThreshold = opts.voicingThreshold ?? 0.45;
+  const periodsPerWindow = opts.periodsPerWindow ?? (method === 'cc' ? 1.0 : 4.5);
+  const octaveCost = opts.octaveCost ?? 0.01;
+
+  const res: HarmonicityResult = {
+    meanDb: NaN,
+    medianDb: NaN,
+    voicedFrames: 0,
+    totalFrames: 0,
+    frameDb: [],
+    frameTimesSec: [],
+    frameF0Hz: []
+  };
+  const N = signal.length;
+  if (!(sampleRate > 0) || N < 16) return res;
+
+  const windowSec = periodsPerWindow / pitchFloor;
+  const nWin = 2 * Math.floor((windowSec * sampleRate) / 2);
+  const duration = N / sampleRate;
+  if (nWin < 32 || windowSec > duration) return res;
+
+  let gMean = 0;
+  for (let i = 0; i < N; i++) gMean += signal[i] ?? 0;
+  gMean /= N;
+  let globalPeak = 0;
+  for (let i = 0; i < N; i++) globalPeak = Math.max(globalPeak, Math.abs((signal[i] ?? 0) - gMean));
+  if (!(globalPeak > 0)) return res;
+
+  const minLag = Math.max(2, Math.floor(sampleRate / pitchCeiling));
+  const maxLag = Math.min(Math.floor(nWin / periodsPerWindow) + 2, method === 'ac' ? nWin >> 1 : nWin);
+
+  const nFft = method === 'ac' ? nextPow2(2 * nWin) : nextPow2(nWin + maxLag + 2);
+  const re = new Float64Array(nFft);
+  const im = new Float64Array(nFft);
+  const re2 = new Float64Array(nFft);
+  const im2 = new Float64Array(nFft);
+  const win = hannWindow(nWin);
+  const winAc = method === 'ac' ? windowNormAutocorr(win, nFft) : new Float64Array(0);
+  const frame = new Float64Array(nWin);
+
+  const nFrames = Math.floor((duration - windowSec) / timeStep) + 1;
+  const t1 = 0.5 * (duration - (nFrames - 1) * timeStep);
+
+  for (let f = 0; f < nFrames; f++) {
+    const tc = t1 + f * timeStep;
+    const start = Math.round(tc * sampleRate - nWin / 2);
+
+    let peak: HarmonicityPeak;
+    let localPeak: number;
+    if (method === 'ac') {
+      if (start < 0 || start + nWin > N) continue;
+      for (let i = 0; i < nWin; i++) frame[i] = signal[start + i] ?? 0;
+      ({ peak, localPeak } = harmonicityFrameCore(
+        frame, sampleRate, win, winAc, nFft, re, im, minLag, maxLag, pitchFloor, octaveCost
+      ));
+    } else {
+      const cc = crossCorrelationFrame(signal, start, nWin, maxLag, nFft, re, im, re2, im2);
+      localPeak = cc.localPeak;
+      peak = bestAutocorrPeak(cc.r, minLag, maxLag, sampleRate, pitchFloor, octaveCost);
+    }
+
+    // próg „niedźwięczności” jak w Praat (silence + voicing threshold)
+    const unvoicedStrength =
+      voicingThreshold +
+      Math.max(0, 2 - localPeak / globalPeak / (silenceThreshold / (1 + voicingThreshold)));
+
+    const voiced = Number.isFinite(peak.strength) && peak.strength > unvoicedStrength;
+    const hnr = voiced ? strengthToHnrDb(peak.strength) : NaN;
+
+    res.totalFrames++;
+    res.frameTimesSec.push(tc);
+    res.frameDb.push(hnr);
+    res.frameF0Hz.push(voiced ? sampleRate / peak.lag : NaN);
+  }
+
+  const valid = res.frameDb.filter((v) => Number.isFinite(v));
+  res.voicedFrames = valid.length;
+  if (valid.length > 0) {
+    res.meanDb = valid.reduce((a, b) => a + b, 0) / valid.length;
+    res.medianDb = medianOfValid(valid);
+  }
+  return res;
+}
+
+/**
+ * HNR pojedynczej ramki (np. do podglądu na żywo). Ramka powinna mieć ok. 4–6 okresów
+ * najniższego oczekiwanego F0 (≈ 40–70 ms) — dłuższa ramka przy vibrato zaniża wynik.
+ * `f0` jest opcjonalną podpowiedzią (zawęża zakres lagów do f0/1.5 … f0·1.5).
+ * Zwraca NaN dla ramki niedźwięcznej (zamiast „-20 dB”, które zaniżało mediany).
+ */
+export function calculateHNR(
+  frame: Float32Array | number[],
+  sampleRate: number,
+  f0: number = NaN,
+  opts: HarmonicityOptions = {}
+): number {
+  const n = frame.length;
+  if (n < 64 || !(sampleRate > 0)) return NaN;
+
+  const hasHint = Number.isFinite(f0) && f0 > 0;
+  const pitchFloor = hasHint ? Math.max(30, f0 / 1.5) : (opts.pitchFloor ?? 75);
+  const pitchCeiling = hasHint ? f0 * 1.5 : (opts.pitchCeiling ?? 600);
+  const octaveCost = opts.octaveCost ?? 0.01;
+
+  const nWin = n;
+  const nFft = nextPow2(2 * nWin);
+  const win = hannWindow(nWin);
+  const winAc = windowNormAutocorr(win, nFft);
+  const minLag = Math.max(2, Math.floor(sampleRate / pitchCeiling));
+  const maxLag = Math.min(Math.ceil(sampleRate / pitchFloor) + 1, Math.floor(nWin / 3));
+  if (maxLag <= minLag + 2) return NaN;
+
+  const { peak } = harmonicityFrameCore(
+    frame, sampleRate, win, winAc, nFft,
+    new Float64Array(nFft), new Float64Array(nFft),
+    minLag, maxLag, pitchFloor, octaveCost
+  );
+  if (!Number.isFinite(peak.strength) || peak.strength < (opts.voicingThreshold ?? 0.45)) return NaN;
+  const hnr = strengthToHnrDb(peak.strength);
+  return Number.isFinite(hnr) ? Math.round(hnr * 10) / 10 : NaN;
+}
+
+function readAnalyserDb(analyser: AnalyserNode): Float32Array {
+  const db = new Float32Array(analyser.frequencyBinCount);
+  analyser.getFloatFrequencyData(db);
+  return db;
+}
+
+export class LongTermSpectrum {
+  private sum: Float64Array | null = null;
+  private frames = 0;
+  private sampleRate = 0;
+
+  add(analyser: AnalyserNode): void {
+    const db = readAnalyserDb(analyser);
+    if (!this.sum || this.sum.length !== db.length) {
+      this.sum = new Float64Array(db.length);
+      this.frames = 0;
+    }
+    this.sampleRate = analyser.context.sampleRate;
+    for (let i = 0; i < db.length; i++) {
+      const d = Math.max(-120, db[i] ?? -120);
+      this.sum[i] = (this.sum[i] ?? 0) + Math.pow(10, d / 10);
+    }
+    this.frames++;
+  }
+
+  get frameCount(): number {
+    return this.frames;
+  }
+
+  get sampleRateHz(): number {
+    return this.sampleRate;
+  }
+
+  reset(): void {
+    this.sum = null;
+    this.frames = 0;
+  }
+
+  toDb(): Float32Array {
+    if (!this.sum || this.frames === 0) return new Float32Array(0);
+    const out = new Float32Array(this.sum.length);
+    for (let i = 0; i < out.length; i++) out[i] = 10 * Math.log10(Math.max(1e-12, (this.sum[i] ?? 0) / this.frames));
+    return out;
+  }
+}
+
+export function calculateSpectralNoiseFromDb(
+  db: ArrayLike<number>,
+  sampleRate: number,
   f0: number,
   vowelFormantCutoffHz = 2000
 ): number {
   if (!(f0 >= 50) || !Number.isFinite(f0)) return NaN;
 
-  const nBins = analyser.frequencyBinCount;
-  const db = new Float32Array(nBins);
-  analyser.getFloatFrequencyData(db);
+  const nBins = db.length;
+  if (nBins < 8 || !(sampleRate > 0)) return NaN;
 
-  const nyquist = analyser.context.sampleRate / 2;
+  const nyquist = sampleRate / 2;
   const binHz = nyquist / nBins;
-  if (f0 < 2 * binHz) return NaN;
+  if (f0 < 6 * binHz) return NaN;
+
+  const lvl = (i: number): number => Math.max(-120, db[i] ?? -120);
 
   let maxDb = -Infinity;
   const maxSearchBin = Math.min(nBins, Math.round(vowelFormantCutoffHz / binHz));
@@ -416,22 +808,20 @@ export function calculateSpectralNoise(
 
   const f0Bin = Math.round(f0 / binHz);
   const belowF0Limit = Math.max(1, Math.round(0.75 * f0Bin));
-  for (let i = 1; i <= belowF0Limit; i++) {
-    const val = (db[i] ?? -120) - maxDb;
-    noiseDbSum += val;
+  const firstBin = Math.max(1, Math.ceil(50 / binHz));
+  for (let i = firstBin; i <= belowF0Limit; i++) {
+    noiseDbSum += lvl(i) - maxDb;
     noiseBinCount++;
   }
 
   const maxHarmonic = Math.floor(vowelFormantCutoffHz / f0);
+  const span = Math.max(1, Math.floor((0.15 * f0) / binHz));
   for (let h = 1; h < maxHarmonic; h++) {
     const hCenter = Math.round(((h + 0.5) * f0) / binHz);
-    const span = Math.max(1, Math.floor((0.15 * f0) / binHz));
-
     for (let j = -span; j <= span; j++) {
       const idx = hCenter + j;
       if (idx > 0 && idx < nBins && idx * binHz < vowelFormantCutoffHz) {
-        const val = (db[idx] ?? -120) - maxDb;
-        noiseDbSum += val;
+        noiseDbSum += lvl(idx) - maxDb;
         noiseBinCount++;
       }
     }
@@ -441,21 +831,34 @@ export function calculateSpectralNoise(
   return Math.round((noiseDbSum / noiseBinCount) * 10) / 10;
 }
 
-export function calculateSingerFormantAndSPR(
-  analyser: AnalyserNode,
-  f0: number = 0,
-  rolloffThreshold = 0.85
-): {
+export function calculateSpectralNoise(analyser: AnalyserNode, f0: number, vowelFormantCutoffHz = 2000): number {
+  return calculateSpectralNoiseFromDb(readAnalyserDb(analyser), analyser.context.sampleRate, f0, vowelFormantCutoffHz);
+}
+
+export interface SingerFormantResult {
   sfEnergyDb: number;
   spr: number;
   sppFreqHz: number;
   spectralCentroidHz: number;
   spectralRolloffHz: number;
-} {
-  const numBins = analyser.frequencyBinCount;
-  const freqData = new Float32Array(numBins);
-  analyser.getFloatFrequencyData(freqData);
-  const nyquist = analyser.context.sampleRate / 2;
+}
+
+export function calculateSingerFormantAndSPRFromDb(
+  freqData: ArrayLike<number>,
+  sampleRate: number,
+  f0: number = 0,
+  rolloffThreshold = 0.85
+): SingerFormantResult {
+  const nanResult: SingerFormantResult = {
+    sfEnergyDb: NaN,
+    spr: NaN,
+    sppFreqHz: NaN,
+    spectralCentroidHz: NaN,
+    spectralRolloffHz: NaN
+  };
+  const numBins = freqData.length;
+  if (numBins < 8 || !(sampleRate > 0)) return nanResult;
+  const nyquist = sampleRate / 2;
   const binHz = nyquist / numBins;
 
   const SF_LO = 2500;
@@ -468,36 +871,39 @@ export function calculateSingerFormantAndSPR(
     const val = freqData[i] ?? -Infinity;
     if (val > maxDb) maxDb = val;
   }
-  if (!Number.isFinite(maxDb) || maxDb < -85) {
-    return { sfEnergyDb: NaN, spr: NaN, sppFreqHz: NaN, spectralCentroidHz: NaN, spectralRolloffHz: NaN };
-  }
+  if (!Number.isFinite(maxDb) || maxDb < -85) return nanResult;
 
-  const powers = new Float64Array(numBins);
-  let sumPower = 0;
-  let sumFPower = 0;
+  const minBin = Math.max(0, Math.floor(TOTAL_LO / binHz));
+  const maxBin = Math.min(numBins - 1, Math.ceil(TOTAL_HI / binHz));
+
+  const mags = new Float64Array(numBins);
   let sfPow = 0;
   let totalPow = 0;
+  let sumMag = 0;
+  let sumPow = 0; // do centroidu (Praat: domyślnie ważenie mocą, power = 2)
+  let sumFPow = 0;
 
-  for (let i = 0; i < numBins; i++) {
+  for (let i = minBin; i <= maxBin; i++) {
     const db = Math.max(-120, freqData[i] ?? -120);
-    const p = Math.pow(10, db / 10);
     const f = i * binHz;
-    powers[i] = p;
-    sumPower += p;
-    sumFPower += f * p;
-
+    const p = Math.pow(10, db / 10);
+    const a = Math.pow(10, db / 20);
+    mags[i] = a;
+    sumMag += a;
+    sumPow += p;
+    sumFPow += f * p;
+    totalPow += p;
     if (f >= SF_LO && f <= SF_HI) sfPow += p;
-    if (f >= TOTAL_LO && f <= TOTAL_HI) totalPow += p;
   }
 
-  const spectralCentroidHz = sumPower > 0 ? sumFPower / sumPower : 0;
+  const spectralCentroidHz = sumPow > 0 ? sumFPow / sumPow : NaN;
 
-  const target = sumPower * rolloffThreshold;
-  let cum = 0;
-  let spectralRolloffHz = 0;
-  for (let i = 0; i < numBins; i++) {
-    cum += powers[i] ?? 0;
-    if (cum >= target) {
+  const targetEnergy = sumMag * rolloffThreshold;
+  let accumulatedMag = 0;
+  let spectralRolloffHz = NaN;
+  for (let i = minBin; i <= maxBin; i++) {
+    accumulatedMag += mags[i] ?? 0;
+    if (accumulatedMag >= targetEnergy) {
       spectralRolloffHz = i * binHz;
       break;
     }
@@ -515,9 +921,14 @@ export function calculateSingerFormantAndSPR(
     return true;
   };
 
+  const refineHz = (i: number): number => {
+    const o = parabolicVertex(freqData[i - 1] ?? -120, freqData[i] ?? -120, freqData[i + 1] ?? -120).offset;
+    return (i + (Number.isFinite(o) ? Math.max(-0.5, Math.min(0.5, o)) : 0)) * binHz;
+  };
+
   let maxLowDb = -Infinity;
   let maxHighDb = -Infinity;
-  let sppFreqHz = 0;
+  let sppFreqHz = NaN;
   for (let i = 1; i < numBins - 1; i++) {
     const f = i * binHz;
     if (f < 50 || f > 4000) continue;
@@ -527,7 +938,7 @@ export function calculateSingerFormantAndSPR(
       if (v > maxLowDb) maxLowDb = v;
     } else if (v > maxHighDb) {
       maxHighDb = v;
-      sppFreqHz = f;
+      sppFreqHz = refineHz(i);
     }
   }
 
@@ -538,11 +949,11 @@ export function calculateSingerFormantAndSPR(
     }
   }
   if (maxHighDb === -Infinity) {
-    for (let i = 0; i < numBins; i++) {
+    for (let i = 1; i < numBins - 1; i++) {
       const f = i * binHz;
       if (f >= 2000 && f <= 4000 && (freqData[i] ?? -Infinity) > maxHighDb) {
         maxHighDb = freqData[i] ?? -Infinity;
-        sppFreqHz = f;
+        sppFreqHz = refineHz(i);
       }
     }
   }
@@ -555,6 +966,331 @@ export function calculateSingerFormantAndSPR(
     sppFreqHz: Math.round(sppFreqHz),
     spectralCentroidHz: Math.round(spectralCentroidHz),
     spectralRolloffHz: Math.round(spectralRolloffHz)
+  };
+}
+
+export function calculateSingerFormantAndSPR(
+  analyser: AnalyserNode,
+  f0: number = 0,
+  rolloffThreshold = 0.85
+): SingerFormantResult {
+  return calculateSingerFormantAndSPRFromDb(readAnalyserDb(analyser), analyser.context.sampleRate, f0, rolloffThreshold);
+}
+
+// ---------------------------------------------------------------------------
+// CPP / CPPS — algorytm zgodny z Praat (PowerCepstrogram ▸ Get CPPS)
+//   • widmo ograniczone do maxFrequency (5 kHz) po pre-emfazie od 50 Hz,
+//   • cepstrum MOCY: c[n] = IDFT( ln|X|² ), a wartości w dB: 10·log10(c²)   ← kluczowa różnica,
+//     w poprzedniej wersji prominencję liczono w jednostkach liniowych cepstrum rzeczywistego,
+//   • linia trendu (prosta, Theil–Sen = „Robust” w Praat) dopasowana do dB-cepstrum
+//     na kwefrencji od 1 ms do końca cepstrum (a nie tylko w oknie wokół F0),
+//   • CPP = (maksimum dB-cepstrum w zakresie 1/pitchMax … 1/pitchMin) − linia trendu,
+//   • CPPS = ta sama wielkość po wygładzeniu cepstrogramu (w czasie 20 ms i w kwefrencji 0.5 ms),
+//     uśredniona po wszystkich ramkach.
+// ---------------------------------------------------------------------------
+export interface CPPSOptions {
+  pitchFloor?: number; // Hz – wyznacza długość okna (3 / pitchFloor), domyślnie 60
+  peakSearchMinHz?: number; // domyślnie 60
+  peakSearchMaxHz?: number; // domyślnie 330 (Praat); dla śpiewu można dać 600–1000
+  timeStep?: number; // s, domyślnie 0.005 (Praat: 0.002)
+  maxFrequency?: number; // Hz, domyślnie 5000
+  preEmphasisHz?: number; // domyślnie 50
+  timeAveragingSec?: number; // domyślnie 0.02
+  quefrencyAveragingSec?: number; // domyślnie 0.0005
+  tiltLineStartSec?: number; // domyślnie 0.001
+  robustFit?: boolean; // true = Theil–Sen (Praat „Robust”), false = MNK
+  cepstrumLengthSec?: number; // koniec zakresu dopasowania linii trendu [s]; domyślnie 0.04 (dobrane empirycznie względem Praat)
+}
+
+export interface CPPSResult {
+  cppsDb: number;
+  frameCppDb: number[];
+  frameTimesSec: number[];
+}
+
+interface CepstrumContext {
+  nWin: number;
+  nFft: number;
+  K: number; // liczba prążków widma użytych do cepstrum (0 … maxFrequency)
+  Q: number; // liczba punktów cepstrum
+  dq: number; // krok kwefrencji [s]
+  win: Float64Array;
+  cosTable: Float64Array; // K × Q
+}
+
+const COS_TABLE_CACHE = new Map<string, Float64Array>();
+
+function buildCepstrumContext(sampleRate: number, widthSec: number, maxFrequency: number, qEndOverride?: number): CepstrumContext {
+  const nWin = Math.max(64, Math.round(widthSec * sampleRate));
+  const nFft = nextPow2(nWin);
+  const binHz = sampleRate / nFft;
+  const fMax = Math.min(maxFrequency, sampleRate / 2);
+  const K = Math.max(8, Math.min(nFft >> 1, Math.floor(fMax / binHz)));
+  const fMaxActual = K * binHz;
+  const dq = 1 / (2 * fMaxActual);
+  // długość cepstrum jak w Praat (próbkowanie 2·maxFrequency, FFT potęgi dwójki, połowa widma)
+  const nFft10k = nextPow2(Math.round(widthSec * 2 * fMax));
+  const qEnd = qEndOverride ?? (nFft10k / 2) * (1 / (2 * fMax));
+  const Q = Math.max(16, Math.floor(qEnd / dq) + 1);
+  const cacheKey = `${K}x${Q}`;
+  let cosTable = COS_TABLE_CACHE.get(cacheKey);
+  if (!cosTable) {
+    cosTable = new Float64Array(K * Q);
+    for (let k = 0; k < K; k++) {
+      for (let q = 0; q < Q; q++) cosTable[k * Q + q] = Math.cos((Math.PI * k * q) / K);
+    }
+    COS_TABLE_CACHE.set(cacheKey, cosTable);
+  }
+  return { nWin, nFft, K, Q, dq, win: hannWindow(nWin), cosTable };
+}
+
+/** Cepstrum mocy c² jednej ramki (już po pre-emfazie), w jednostkach liniowych. */
+function powerCepstrumOfFrame(
+  seg: ArrayLike<number>,
+  ctx: CepstrumContext,
+  re: Float64Array,
+  im: Float64Array,
+  logSpec: Float64Array
+): Float64Array {
+  re.fill(0);
+  im.fill(0);
+  let mean = 0;
+  for (let i = 0; i < ctx.nWin; i++) mean += seg[i] ?? 0;
+  mean /= ctx.nWin;
+  for (let i = 0; i < ctx.nWin; i++) re[i] = ((seg[i] ?? 0) - mean) * (ctx.win[i] ?? 0);
+  fftRadix2(re, im, false);
+  for (let k = 0; k < ctx.K; k++) {
+    logSpec[k] = Math.log((re[k] ?? 0) * (re[k] ?? 0) + (im[k] ?? 0) * (im[k] ?? 0) + 1e-30);
+  }
+  const out = new Float64Array(ctx.Q);
+  for (let k = 0; k < ctx.K; k++) {
+    const L = logSpec[k] ?? 0;
+    const row = k * ctx.Q;
+    for (let q = 0; q < ctx.Q; q++) out[q] = (out[q] ?? 0) + L * (ctx.cosTable[row + q] ?? 0);
+  }
+  for (let q = 0; q < ctx.Q; q++) {
+    const c = (out[q] ?? 0) / ctx.K;
+    out[q] = c * c;
+  }
+  return out;
+}
+
+function toDbCepstrum(p: Float64Array): Float64Array {
+  const y = new Float64Array(p.length);
+  for (let i = 0; i < p.length; i++) y[i] = 10 * Math.log10(Math.max(1e-30, p[i] ?? 0));
+  return y;
+}
+
+function theilSenLine(xs: number[], ys: number[]): { slope: number; intercept: number } {
+  const n = xs.length;
+  const slopes = new Float64Array((n * (n - 1)) / 2);
+  let m = 0;
+  for (let i = 0; i < n - 1; i++) {
+    for (let j = i + 1; j < n; j++) {
+      slopes[m++] = ((ys[j] ?? 0) - (ys[i] ?? 0)) / ((xs[j] ?? 0) - (xs[i] ?? 0));
+    }
+  }
+  slopes.sort();
+  const slope = m % 2 ? (slopes[m >> 1] ?? 0) : ((slopes[(m >> 1) - 1] ?? 0) + (slopes[m >> 1] ?? 0)) / 2;
+  const inter = new Float64Array(n);
+  for (let i = 0; i < n; i++) inter[i] = (ys[i] ?? 0) - slope * (xs[i] ?? 0);
+  inter.sort();
+  const intercept = n % 2 ? (inter[n >> 1] ?? 0) : ((inter[(n >> 1) - 1] ?? 0) + (inter[n >> 1] ?? 0)) / 2;
+  return { slope, intercept };
+}
+
+function leastSquaresLine(xs: number[], ys: number[]): { slope: number; intercept: number } {
+  const n = xs.length;
+  let sx = 0, sy = 0, sxy = 0, sxx = 0;
+  for (let i = 0; i < n; i++) {
+    const x = xs[i] ?? 0, y = ys[i] ?? 0;
+    sx += x; sy += y; sxy += x * y; sxx += x * x;
+  }
+  const d = n * sxx - sx * sx;
+  const slope = Math.abs(d) < 1e-30 ? 0 : (n * sxy - sx * sy) / d;
+  return { slope, intercept: (sy - slope * sx) / n };
+}
+
+/** Prominencja piku w dB-cepstrum `y` względem prostej trendu. */
+function peakProminenceDb(
+  y: Float64Array,
+  dq: number,
+  peakMinHz: number,
+  peakMaxHz: number,
+  tiltStartSec: number,
+  robust: boolean
+): { prominenceDb: number; quefrencySec: number } {
+  const none = { prominenceDb: NaN, quefrencySec: NaN };
+  const Q = y.length;
+  const iFit0 = Math.max(1, Math.ceil(tiltStartSec / dq));
+  if (Q - iFit0 < 8) return none;
+
+  const xs: number[] = [];
+  const ys: number[] = [];
+  // Theil–Sen ma koszt O(n² log n); linia trendu jest gładka, więc wystarczy co 3. punkt
+  // (≈9× mniej par, praktycznie ten sam wynik). Dla MNK używamy wszystkich punktów.
+  const stride = robust ? 3 : 1;
+  for (let i = iFit0; i < Q; i += stride) {
+    xs.push(i * dq);
+    ys.push(y[i] ?? 0);
+  }
+  const { slope, intercept } = robust ? theilSenLine(xs, ys) : leastSquaresLine(xs, ys);
+
+  const iLo = Math.max(2, Math.ceil(1 / peakMaxHz / dq));
+  const iHi = Math.min(Q - 2, Math.floor(1 / peakMinHz / dq));
+  if (iLo >= iHi) return none;
+
+  let best = -1;
+  let bestV = -Infinity;
+  for (let i = iLo; i <= iHi; i++) {
+    const v = y[i] ?? -Infinity;
+    if (v > bestV) {
+      bestV = v;
+      best = i;
+    }
+  }
+  if (best < 0) return none;
+
+  const pv = parabolicVertex(y[best - 1] ?? 0, y[best] ?? 0, y[best + 1] ?? 0);
+  const q = (best + pv.offset) * dq;
+  const prominence = pv.value - (slope * q + intercept);
+  return Number.isFinite(prominence) ? { prominenceDb: prominence, quefrencySec: q } : none;
+}
+
+function preEmphasize(x: ArrayLike<number>, sampleRate: number, freqHz: number): Float64Array {
+  const out = new Float64Array(x.length);
+  const a = freqHz > 0 ? Math.exp((-2 * Math.PI * freqHz) / sampleRate) : 0;
+  let prev = 0;
+  for (let i = 0; i < x.length; i++) {
+    const v = x[i] ?? 0;
+    out[i] = v - a * prev;
+    prev = v;
+  }
+  return out;
+}
+
+/** Cepstral Peak Prominence Smoothed (jak Praat „Get CPPS”) dla całego sygnału. */
+export function calculateCPPS(signal: ArrayLike<number>, sampleRate: number, opts: CPPSOptions = {}): CPPSResult {
+  const pitchFloor = opts.pitchFloor ?? 60;
+  const peakMin = opts.peakSearchMinHz ?? 60;
+  const peakMax = opts.peakSearchMaxHz ?? 330;
+  const timeStep = opts.timeStep ?? 0.005;
+  const maxFreq = opts.maxFrequency ?? 5000;
+  const preEmph = opts.preEmphasisHz ?? 50;
+  const timeAvg = opts.timeAveragingSec ?? 0.02;
+  const quefAvg = opts.quefrencyAveragingSec ?? 0.0005;
+  const tiltStart = opts.tiltLineStartSec ?? 0.001;
+  const robust = opts.robustFit ?? true;
+
+  const res: CPPSResult = { cppsDb: NaN, frameCppDb: [], frameTimesSec: [] };
+  const N = signal.length;
+  if (!(sampleRate > 0) || N < 512) return res;
+
+  const widthSec = 3 / pitchFloor;
+  const duration = N / sampleRate;
+  if (widthSec > duration) return res;
+
+  const ctx = buildCepstrumContext(sampleRate, widthSec, maxFreq, opts.cepstrumLengthSec ?? 0.04);
+  const x = preEmphasize(signal, sampleRate, preEmph);
+  const re = new Float64Array(ctx.nFft);
+  const im = new Float64Array(ctx.nFft);
+  const logSpec = new Float64Array(ctx.K);
+  const seg = new Float64Array(ctx.nWin);
+
+  const nFrames = Math.floor((duration - widthSec) / timeStep) + 1;
+  const t1 = 0.5 * (duration - (nFrames - 1) * timeStep);
+
+  const powerFrames: Float64Array[] = [];
+  for (let f = 0; f < nFrames; f++) {
+    const tc = t1 + f * timeStep;
+    const start = Math.round(tc * sampleRate - ctx.nWin / 2);
+    if (start < 0 || start + ctx.nWin > N) continue;
+    for (let i = 0; i < ctx.nWin; i++) seg[i] = x[start + i] ?? 0;
+    powerFrames.push(powerCepstrumOfFrame(seg, ctx, re, im, logSpec));
+    res.frameTimesSec.push(tc);
+  }
+  const F = powerFrames.length;
+  if (F === 0) return res;
+
+  // wygładzanie cepstrogramu: czas, potem kwefrencja (na wartościach mocy)
+  const halfT = Math.max(0, Math.floor(timeAvg / 2 / timeStep));
+  const halfQ = Math.max(0, Math.floor(Math.round(quefAvg / ctx.dq) / 2));
+  const timeSmoothed: Float64Array[] = [];
+  for (let f = 0; f < F; f++) {
+    const a = Math.max(0, f - halfT);
+    const b = Math.min(F - 1, f + halfT);
+    const acc = new Float64Array(ctx.Q);
+    for (let g = a; g <= b; g++) {
+      const pf = powerFrames[g]!;
+      for (let q = 0; q < ctx.Q; q++) acc[q] = (acc[q] ?? 0) + (pf[q] ?? 0);
+    }
+    for (let q = 0; q < ctx.Q; q++) acc[q] = (acc[q] ?? 0) / (b - a + 1);
+    timeSmoothed.push(acc);
+  }
+
+  const cpps: number[] = [];
+  for (let f = 0; f < F; f++) {
+    const src = timeSmoothed[f]!;
+    const sm = new Float64Array(ctx.Q);
+    for (let q = 0; q < ctx.Q; q++) {
+      const a = Math.max(0, q - halfQ);
+      const b = Math.min(ctx.Q - 1, q + halfQ);
+      let s = 0;
+      for (let k = a; k <= b; k++) s += src[k] ?? 0;
+      sm[q] = s / (b - a + 1);
+    }
+    const p = peakProminenceDb(toDbCepstrum(sm), ctx.dq, peakMin, peakMax, tiltStart, robust);
+    res.frameCppDb.push(p.prominenceDb);
+    if (Number.isFinite(p.prominenceDb)) cpps.push(p.prominenceDb);
+  }
+  res.cppsDb = cpps.length > 0 ? cpps.reduce((a, b) => a + b, 0) / cpps.length : NaN;
+  return res;
+}
+
+/**
+ * CPP pojedynczej ramki (bez wygładzania w czasie) w skali dB zgodnej z Praat.
+ * Ramka powinna mieć ≥ 3/pitchFloor s (≈ 50 ms dla 60 Hz). Do raportowania wyników
+ * z całych nagrań używaj `calculateCPPS`.
+ */
+export function calculateCPP(
+  buffer: Float32Array,
+  sampleRate: number,
+  pitchFloor = 60,
+  pitchCeiling = 600,
+  smoothQuefrency = true
+): CPPResult {
+  const empty: CPPResult = { cppDb: NaN, f0CepstralHz: NaN, quefrencySec: NaN };
+  if (!buffer || buffer.length < 512 || !(sampleRate > 0)) return empty;
+
+  const ctx = buildCepstrumContext(sampleRate, buffer.length / sampleRate, 5000, 0.04);
+  const x = preEmphasize(buffer, sampleRate, 50);
+  const p = powerCepstrumOfFrame(
+    x.length === ctx.nWin ? x : x.subarray(0, ctx.nWin),
+    ctx,
+    new Float64Array(ctx.nFft),
+    new Float64Array(ctx.nFft),
+    new Float64Array(ctx.K)
+  );
+
+  let src = p;
+  if (smoothQuefrency) {
+    const halfQ = Math.max(0, Math.floor(Math.round(0.0005 / ctx.dq) / 2));
+    src = new Float64Array(ctx.Q);
+    for (let q = 0; q < ctx.Q; q++) {
+      const a = Math.max(0, q - halfQ);
+      const b = Math.min(ctx.Q - 1, q + halfQ);
+      let s = 0;
+      for (let k = a; k <= b; k++) s += p[k] ?? 0;
+      src[q] = s / (b - a + 1);
+    }
+  }
+
+  const r = peakProminenceDb(toDbCepstrum(src), ctx.dq, pitchFloor, pitchCeiling, 0.001, true);
+  if (!Number.isFinite(r.prominenceDb)) return empty;
+  return {
+    cppDb: Math.round(Math.max(0, r.prominenceDb) * 10) / 10,
+    f0CepstralHz: Math.round((1 / r.quefrencySec) * 10) / 10,
+    quefrencySec: r.quefrencySec
   };
 }
 
@@ -581,6 +1317,8 @@ export function analyzeVibratoFull(
     const p = pitchHistory[i] ?? 0;
     const t = hasTs ? (timestampsSec?.[i] ?? i * sampleIntervalSec) : i * sampleIntervalSec;
     if (p > 50 && Number.isFinite(p) && Number.isFinite(t)) {
+      const prev = validEntries[validEntries.length - 1];
+      if (prev && t <= prev.t) continue;
       validEntries.push({ f: p, t });
     }
   }
@@ -659,47 +1397,47 @@ export function analyzeVibratoFull(
   for (let i = 0; i < N; i++) energy0 += detrended[i]! * detrended[i]!;
   if (energy0 <= 1e-6) return emptyVibrato();
 
-  const minLag = Math.max(2, Math.floor(0.117 / dt));
-  const maxLag = Math.min(Math.floor(N / 2), Math.ceil(0.25 / dt));
+  const minLag = Math.max(2, Math.floor(0.1 / dt));
+  const maxLag = Math.min(Math.floor(N / 2.5), Math.ceil(0.34 / dt));
+  if (maxLag - minLag < 3) return emptyVibrato();
 
-  let maxCorr = -1;
-  let bestLag = -1;
-
-  for (let lag = minLag; lag <= maxLag; lag++) {
+  const normAc = (lag: number): number => {
     let r = 0;
-    let norm1 = 0;
-    let norm2 = 0;
+    let n1 = 0;
+    let n2 = 0;
     for (let i = 0; i < N - lag; i++) {
       const v1 = detrended[i]!;
       const v2 = detrended[i + lag]!;
       r += v1 * v2;
-      norm1 += v1 * v1;
-      norm2 += v2 * v2;
+      n1 += v1 * v1;
+      n2 += v2 * v2;
     }
-    const denom = Math.sqrt(norm1 * norm2);
-    const normR = denom > 1e-9 ? r / denom : 0;
-    if (normR > maxCorr) {
-      maxCorr = normR;
+    const den = Math.sqrt(n1 * n2);
+    return den > 1e-9 ? r / den : 0;
+  };
+
+  const ac = new Map<number, number>();
+  for (let lag = minLag - 1; lag <= maxLag + 1; lag++) ac.set(lag, normAc(lag));
+  let globalMax = -1;
+  for (let lag = minLag; lag <= maxLag; lag++) globalMax = Math.max(globalMax, ac.get(lag) ?? 0);
+
+  let bestLag = -1;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    const v = ac.get(lag) ?? 0;
+    if (v >= 0.9 * globalMax && v >= (ac.get(lag - 1) ?? 0) && v >= (ac.get(lag + 1) ?? 0)) {
       bestLag = lag;
+      break;
     }
   }
+  const maxCorr = bestLag > 0 ? (ac.get(bestLag) ?? 0) : -1;
 
   if (bestLag <= 0 || maxCorr < 0.28) return emptyVibrato();
 
   let fineLag = bestLag;
-  if (bestLag > minLag && bestLag < maxLag) {
-    const computeNormR = (lg: number) => {
-      let r = 0, n1 = 0, n2 = 0;
-      for (let i = 0; i < N - lg; i++) {
-        r += detrended[i]! * detrended[i + lg]!;
-        n1 += detrended[i]! * detrended[i]!;
-        n2 += detrended[i + lg]! * detrended[i + lg]!;
-      }
-      return r / (Math.sqrt(n1 * n2) || 1);
-    };
-    const y1 = computeNormR(bestLag - 1);
+  {
+    const y1 = ac.get(bestLag - 1) ?? 0;
     const y2 = maxCorr;
-    const y3 = computeNormR(bestLag + 1);
+    const y3 = ac.get(bestLag + 1) ?? 0;
     const denom = y1 - 2 * y2 + y3;
     if (Math.abs(denom) > 1e-9) {
       fineLag += Math.max(-0.5, Math.min(0.5, (0.5 * (y1 - y3)) / denom));
@@ -707,25 +1445,53 @@ export function analyzeVibratoFull(
   }
 
   const rateHz = 1 / (fineLag * dt);
-  const rmsCents = Math.sqrt(energy0 / N);
-  const extentCents = rmsCents * Math.SQRT2;
-  const extentSemitones = extentCents / 100;
+  const L = fineLag;
+  const m = Math.max(1, Math.floor((L - 1) / 2));
+  const outerW = Math.max(0, (L - (2 * m + 1)) / 2);
+  let series = detrended;
+  let seriesOffset = 0;
+  if (centsContour.length > 2 * (m + 1) + Math.ceil(2 * L)) {
+    const s2: number[] = [];
+    for (let i = m + 1; i < centsContour.length - m - 1; i++) {
+      let sum = 0;
+      for (let k = -m; k <= m; k++) sum += centsContour[i + k]!;
+      sum += outerW * (centsContour[i - m - 1]! + centsContour[i + m + 1]!);
+      s2.push(centsContour[i]! - sum / L);
+    }
+    series = s2;
+    seriesOffset = m + 1;
+  }
+  const Ns = series.length;
+  const rmsOf = (arr: number[]): number => {
+    let e = 0;
+    for (let i = 0; i < arr.length; i++) e += arr[i]! * arr[i]!;
+    return Math.sqrt(e / Math.max(1, arr.length));
+  };
+  const globalExtent = rmsOf(series) * Math.SQRT2;
 
   const windowPer = Math.max(4, Math.round(fineLag));
   let onsetIndex = 0;
-  for (let i = 0; i < N - windowPer; i++) {
+  for (let i = 0; i < Ns - windowPer; i++) {
     let localEnergy = 0;
     for (let k = 0; k < windowPer; k++) {
-      const v = detrended[i + k]!;
+      const v = series[i + k]!;
       localEnergy += v * v;
     }
     const localExtent = Math.sqrt(localEnergy / windowPer) * Math.SQRT2;
-    if (localExtent >= Math.min(15, extentCents * 0.45)) {
+    if (localExtent >= Math.min(15, globalExtent * 0.45)) {
       onsetIndex = i;
       break;
     }
   }
-  const onsetDelaySec = firstTime - (validEntries[0]?.t ?? firstTime) + onsetIndex * dt;
+
+  const steadyStart =
+    onsetIndex === 0 ? 0 : Math.max(0, Math.min(onsetIndex + windowPer, Ns - Math.ceil(2 * fineLag)));
+  const extentCents = rmsOf(series.slice(steadyStart)) * Math.SQRT2;
+  const extentSemitones = extentCents / 100;
+  const onsetDelaySec =
+    firstTime -
+    (validEntries[0]?.t ?? firstTime) +
+    (onsetIndex === 0 ? 0 : (seriesOffset + onsetIndex + windowPer / 2) * dt);
   const sinusoidality = Math.max(0, Math.min(1, maxCorr));
 
   const hasVibrato =

@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import VoiceAnalysis from './components/VoiceAnalysis';
+import Exercises from './components/Exercises';
 
 export default function App() {
   const [logoPosition, setLogoPosition] = useState<'center' | 'top-left'>('center');
   const [showContent, setShowContent] = useState<boolean>(false);
-  const [currentView, setCurrentView] = useState<'home' | 'analysis' | 'exercises'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'analysis' | 'history' | 'exercises'>('home');
 
   useEffect(() => {
     const timer1 = setTimeout(() => {
@@ -73,6 +74,13 @@ export default function App() {
             </button>
 
             <button
+              onClick={() => setCurrentView('history')}
+              className="font-cardo text-sm md:text-xl py-4 px-6 rounded-xl tracking-wider text-center uppercase text-[#18388f] bg-[rgba(255,255,255,0.25)] hover:bg-[rgba(125,148,222,0.55)] transition-all duration-300 active:scale-98 shadow-md backdrop-blur-xs focus:outline-none border-none cursor-pointer"
+            >
+              ZAPISANE WYNIKI ANALIZ
+            </button>
+
+            <button
               onClick={() => setCurrentView('exercises')}
               className="font-cardo text-sm md:text-xl py-4 px-6 rounded-xl tracking-wider text-center uppercase text-[#18388f] bg-[rgba(255,255,255,0.25)] hover:bg-[rgba(125,148,222,0.55)] transition-all duration-300 active:scale-98 shadow-md backdrop-blur-xs focus:outline-none border-none cursor-pointer"
             >
@@ -82,19 +90,27 @@ export default function App() {
         </div>
       )}
 
-      {/* Widok 2: Moduł Analizy Głosu */}
+      {/* Widok 2: Moduł Analizy Głosu (Nowe badanie) */}
       {currentView === 'analysis' && (
         <VoiceAnalysis 
+          initialMode="test"
           onBack={() => setCurrentView('home')} 
           onGoToExercises={() => setCurrentView('exercises')} 
         />
       )}
 
-      {/* Widok 3: Ćwiczenia (na razie pusty szablon do późniejszego uzupełnienia) */}
+      {/* Widok 3: Przeglądanie Archiwum Analiz */}
+      {currentView === 'history' && (
+        <VoiceAnalysis 
+          initialMode="history"
+          onBack={() => setCurrentView('home')} 
+          onGoToExercises={() => setCurrentView('exercises')} 
+        />
+      )}
+
+      {/* Widok 4: Ćwiczenia */}
       {currentView === 'exercises' && (
-        <div className="w-full min-h-screen flex flex-col items-center justify-center relative z-10 px-4 text-white">
-          {/* Miejsce na ćwiczenia */}
-        </div>
+        <Exercises onBack={() => setCurrentView('home')} />
       )}
     </div>
   );

@@ -7,6 +7,7 @@ import {
   extractGlottalCycles,
   calculateJitterShimmerCycleToCycle,
   calculateHNR,
+  calculateCPP,
   analyzeVibratoFull,
   calculateMPFRMetrics,
   medianOfValid,
@@ -14,9 +15,15 @@ import {
   type MPFRResult,
 } from '../utils/audioMetrics';
 
+// Import wygenerowanej mapy częstotliwości z próbek MP3
+import pianoFrequenciesData from '../utils/pianoFrequencies.json';
+
+const CALIBRATED_FREQUENCIES: Record<string, number> = pianoFrequenciesData as Record<string, number>;
+
 interface VoiceAnalysisProps {
   onBack: () => void;
   onGoToExercises?: () => void;
+  initialMode?: 'test' | 'history';
 }
 
 type Stage =
@@ -25,10 +32,43 @@ type Stage =
   | 'SCALE_DOWN_TEST'
   | 'SCALE_DOWN_REVIEW'
   | 'MULTIDISCIPLINARY_A'
-  | 'METRICS_REVIEW';
+  | 'METRICS_REVIEW'
+  | 'HISTORY_REVIEW';
+
+export interface SavedAnalysisRecord {
+  id: string;
+  timestamp: string;
+  metrics: AcousticMetricsState;
+  scaleMaeCents: number;
+  mpfr: MPFRResult | null;
+}
+
+const STORAGE_KEY = 'vocal_analysis_history';
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const MIDI_C4 = 60;
+
+// Nazwy nut z bemolami dla czarnych klawiszy (zgodnie z nazewnictwem plików mp3)
+const NOTE_NAMES_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+
+// Białe klawisze (gama C-dur) od C2 (36) do C6 (84)
+const C_MAJOR_SCALE_MIDIS: number[] = [
+  36, 38, 40, 41, 43, 45, 47, // Oktawa 2 (C2 - B2)
+  48, 50, 52, 53, 55, 57, 59, // Oktawa 3 (C3 - B3)
+  60, 62, 64, 65, 67, 69, 71, // Oktawa 4 (C4 - B4)
+  72, 74, 76, 77, 79, 81, 83, // Oktawa 5 (C5 - B5)
+  84                          // C6
+];
+
+const getNextCMajorMidi = (currentMidi: number): number | null => {
+  const next = C_MAJOR_SCALE_MIDIS.find((m) => m > currentMidi);
+  return next !== undefined ? next : null;
+};
+
+const getPrevCMajorMidi = (currentMidi: number): number | null => {
+  const prevList = C_MAJOR_SCALE_MIDIS.filter((m) => m < currentMidi);
+  return prevList.length > 0 ? (prevList[prevList.length - 1] ?? null) : null;
+};
 
 const midiToNoteName = (midi: number): string => {
   const noteIndex = ((midi % 12) + 12) % 12;
@@ -37,7 +77,22 @@ const midiToNoteName = (midi: number): string => {
   return `${name}${octave}`;
 };
 
-const midiToFreq = (midi: number): number => 440 * Math.pow(2, (midi - 69) / 12);
+// Generowanie nazwy pliku MP3 dla zadanego MIDI (czarne klawisze z bemolami, np. Ab4.mp3)
+const midiToSampleFilename = (midi: number): string => {
+  const noteIndex = ((midi % 12) + 12) % 12;
+  const octave = Math.floor(midi / 12) - 1;
+  const name = NOTE_NAMES_FLAT[noteIndex] ?? "C";
+  return `${name}${octave}.mp3`;
+};
+
+// Pobieranie częstotliwości skorelowanej z plikiem MP3 lub fallback teoretyczny
+const getCalibratedMidiFreq = (midi: number): number => {
+  const calibrated = CALIBRATED_FREQUENCIES[midi.toString()];
+  if (calibrated !== undefined && Number.isFinite(calibrated)) {
+    return calibrated;
+  }
+  return 440 * Math.pow(2, (midi - 69) / 12);
+};
 
 function formatCentsPolish(cents: number): string {
   const rounded = Math.round(cents);
@@ -89,7 +144,7 @@ function evaluateFeedbackMetrics(
   const mpfrSemis = mpfr?.mpfrSemitones ?? 0;
   const mpfrComment = mpfr
     ? `Twój zakres dźwięków obejmuje od ${mpfr.f0MinNoteName} do ${mpfr.f0MaxNoteName} (${mpfr.mpfrOctaves} oktawy).`
-    : 'Brak danych badania skali głosu';
+    : 'Nie analizowano';
   items.push({
     id: 'mpfr',
     label: 'skala głosu (MPFR)',
@@ -104,6 +159,8 @@ function evaluateFeedbackMetrics(
     maeComment = 'Trafiasz w dźwięki z dużą precyzją, Twoja intonacja jest bardzo czysta';
   } else if (mae <= 20) {
     maeComment = 'Trafiasz w dźwięki precyzyjnie, odchylenia są bardzo niewielkie';
+  } else if (mae <= 45) {
+    maeComment = 'Twój śpiew nieco odbiega od właściwej wysokości. Postaraj się poprawić intonację';
   } else {
     maeComment = 'Popracuj nad intonacją (czystością śpiewu): dźwięki często odbiegają od właściwej wysokości';
   }
@@ -293,8 +350,8 @@ function evaluateFeedbackMetrics(
   return items;
 }
 
-export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysisProps) {
-  const [stage, setStage] = useState<Stage>('SCALE_UP_TEST');
+export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = 'test' }: VoiceAnalysisProps) {
+  const [stage, setStage] = useState<Stage>(initialMode === 'history' ? 'HISTORY_REVIEW' : 'SCALE_UP_TEST');
 
   const [currentMidi, setCurrentMidi] = useState<number>(MIDI_C4);
   const [highestMidi, setHighestMidi] = useState<number | null>(null);
@@ -309,22 +366,30 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
   const [scaleMaeCents, setScaleMaeCents] = useState<number>(0);
 
   const [finalMetrics, setFinalMetrics] = useState<AcousticMetricsState | null>(null);
+  const [currentAnalysisRecordId, setCurrentAnalysisRecordId] = useState<string>('');
+  const [currentAnalysisTimestamp, setCurrentAnalysisTimestamp] = useState<string>('');
   const [aProgress, setAProgress] = useState<number>(0);
+
+  // Archiwum badań
+  const [historyRecords, setHistoryRecords] = useState<SavedAnalysisRecord[]>([]);
+  const [currentHistoryIndex, setCurrentHistoryIndex] = useState<number>(0);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const playTimerRef = useRef<number | null>(null);
+  const currentAudioSampleRef = useRef<HTMLAudioElement | null>(null);
 
   const stableHoldRef = useRef<number>(0);
   const pitchBufferRef = useRef<number[]>([]);
   const pitchTimesRef = useRef<number[]>([]);
-  const targetNoteFreqRef = useRef<number>(midiToFreq(MIDI_C4));
+  const targetNoteFreqRef = useRef<number>(getCalibratedMidiFreq(MIDI_C4));
 
   const historyJitterRef = useRef<number[]>([]);
   const historyShimmerRef = useRef<number[]>([]);
   const historyHnrRef = useRef<number[]>([]);
+  const historyCppRef = useRef<number[]>([]);
   const historyNoiseRef = useRef<number[]>([]);
   const historySfEnergyRef = useRef<number[]>([]);
   const historySprRef = useRef<number[]>([]);
@@ -338,12 +403,30 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
   const REQUIRED_STABLE_FRAMES = 38;
 
   useEffect(() => {
-    void initAudio();
-    return () => cleanupAudio();
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed: SavedAnalysisRecord[] = JSON.parse(saved);
+        setHistoryRecords(parsed);
+        if (parsed.length > 0) {
+          setCurrentHistoryIndex(parsed.length - 1);
+        }
+      }
+    } catch (e) {
+      console.error('Błąd odczytu historii', e);
+    }
   }, []);
+
+  useEffect(() => {
+    if (initialMode === 'test') {
+      void initAudio();
+    }
+    return () => cleanupAudio();
+  }, [initialMode]);
 
   const initAudio = async () => {
     try {
+      if (audioCtxRef.current) return;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
       });
@@ -371,31 +454,34 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
   const cleanupAudio = () => {
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     if (playTimerRef.current) clearTimeout(playTimerRef.current);
+    if (currentAudioSampleRef.current) {
+      currentAudioSampleRef.current.pause();
+      currentAudioSampleRef.current = null;
+    }
     if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop());
     if (audioCtxRef.current) void audioCtxRef.current.close();
+    audioCtxRef.current = null;
   };
 
-  const playTone = (freq: number) => {
-    if (!audioCtxRef.current) return;
-    const ctx = audioCtxRef.current;
-    if (ctx.state === 'suspended') void ctx.resume();
-
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(freq, ctx.currentTime);
-
-    gain.gain.setValueAtTime(0.25, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.0);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 1.0);
+  // Odtwarzanie rzeczywistych próbek pianina z plików MP3
+  const playPianoSample = (midi: number) => {
+    try {
+      if (currentAudioSampleRef.current) {
+        currentAudioSampleRef.current.pause();
+        currentAudioSampleRef.current.currentTime = 0;
+      }
+      const filename = midiToSampleFilename(midi);
+      const audio = new Audio(`/piano-mp3/${filename}`);
+      audio.volume = 0.85;
+      currentAudioSampleRef.current = audio;
+      audio.play().catch(e => console.warn(`Nie można odtworzyć próbki /piano-mp3/${filename}:`, e));
+    } catch (e) {
+      console.error("Błąd podczas odtwarzania próbki pianina:", e);
+    }
   };
 
   const handleKeyClick = (midi: number) => {
-    playTone(midiToFreq(midi));
+    playPianoSample(midi);
     if (stage === 'SCALE_UP_TEST' || stage === 'SCALE_DOWN_TEST') {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (playTimerRef.current) clearTimeout(playTimerRef.current);
@@ -404,7 +490,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
 
       playTimerRef.current = window.setTimeout(() => {
         setIsListening(true);
-        runScalePitchTracking(currentMidi, stage === 'SCALE_UP_TEST' ? 'UP' : 'DOWN');
+        runScalePitchTracking(midi, stage === 'SCALE_UP_TEST' ? 'UP' : 'DOWN');
       }, 900);
     }
   };
@@ -425,18 +511,19 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
     setLowestMidi(null);
     setDownGreenNotes(new Set());
     setRedNote(null);
-    startScaleStep(MIDI_C4 - 1, 'DOWN');
+    const prevMidi = getPrevCMajorMidi(MIDI_C4) ?? 59;
+    startScaleStep(prevMidi, 'DOWN');
   };
 
   const startScaleStep = (midi: number, mode: 'UP' | 'DOWN') => {
     setCurrentMidi(midi);
-    targetNoteFreqRef.current = midiToFreq(midi);
+    targetNoteFreqRef.current = getCalibratedMidiFreq(midi);
     setRedNote(null);
     setIsListening(false);
     stableHoldRef.current = 0;
     setCurrentF0(0);
 
-    playTone(midiToFreq(midi));
+    playPianoSample(midi);
 
     if (playTimerRef.current) clearTimeout(playTimerRef.current);
     playTimerRef.current = window.setTimeout(() => {
@@ -454,7 +541,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
     if (ctx.state === 'suspended') void ctx.resume();
 
     const buffer = new Float32Array(analyser.fftSize);
-    const targetF = midiToFreq(midiVal);
+    const targetF = getCalibratedMidiFreq(midiVal);
     let attempts = 0;
     const stepErrors: number[] = [];
 
@@ -512,11 +599,21 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
     if (mode === 'UP') {
       setUpGreenNotes(prev => new Set(prev).add(note));
       setHighestMidi(passedMidi);
-      setTimeout(() => startScaleStep(passedMidi + 1, 'UP'), 400);
+      const nextStepMidi = getNextCMajorMidi(passedMidi);
+      if (nextStepMidi !== null) {
+        setTimeout(() => startScaleStep(nextStepMidi, 'UP'), 400);
+      } else {
+        setTimeout(() => setStage('SCALE_UP_REVIEW'), 400);
+      }
     } else {
       setDownGreenNotes(prev => new Set(prev).add(note));
       setLowestMidi(passedMidi);
-      setTimeout(() => startScaleStep(passedMidi - 1, 'DOWN'), 400);
+      const prevStepMidi = getPrevCMajorMidi(passedMidi);
+      if (prevStepMidi !== null) {
+        setTimeout(() => startScaleStep(prevStepMidi, 'DOWN'), 400);
+      } else {
+        setTimeout(() => setStage('SCALE_DOWN_REVIEW'), 400);
+      }
     }
   };
 
@@ -534,16 +631,28 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
     }, 1000);
   };
 
-  const initMultidisciplinaryTest = () => {
-    const finalLow = lowestMidi ?? (MIDI_C4 - 1);
-    const finalHigh = highestMidi ?? MIDI_C4;
-    const mpfr = calculateMPFRMetrics(finalLow, finalHigh);
+  const handleSkipScale = () => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (playTimerRef.current) clearTimeout(playTimerRef.current);
+    setIsListening(false);
+    initMultidisciplinaryTest(true);
+  };
+
+  const initMultidisciplinaryTest = (skippedScale = false) => {
+    let mpfr: MPFRResult | null = mpfrResult;
+    if (skippedScale) {
+      mpfr = null;
+    } else if (mpfr === null && (highestMidi !== null || lowestMidi !== null)) {
+      const finalLow = lowestMidi ?? (MIDI_C4 - 1);
+      const finalHigh = highestMidi ?? MIDI_C4;
+      mpfr = calculateMPFRMetrics(finalLow, finalHigh);
+    }
     setMpfrResult(mpfr);
     setStage('MULTIDISCIPLINARY_A');
 
-    const midMidi = Math.round((finalLow + finalHigh) / 2);
-    targetNoteFreqRef.current = midiToFreq(midMidi);
-    playTone(targetNoteFreqRef.current);
+    const midMidi = mpfr ? Math.round((mpfr.f0MinMidi + mpfr.f0MaxMidi) / 2) : MIDI_C4;
+    targetNoteFreqRef.current = getCalibratedMidiFreq(midMidi);
+    playPianoSample(midMidi);
 
     pitchBufferRef.current = [];
     pitchTimesRef.current = [];
@@ -552,6 +661,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
     historyJitterRef.current = [];
     historyShimmerRef.current = [];
     historyHnrRef.current = [];
+    historyCppRef.current = [];
     historyNoiseRef.current = [];
     historySfEnergyRef.current = [];
     historySprRef.current = [];
@@ -575,6 +685,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
     let cachedJitter = NaN;
     let cachedShimmer = NaN;
     let cachedHnr = NaN;
+    let cachedCpp = NaN;
     let cachedNoise = NaN;
     let cachedSfAndSpr = { sfEnergyDb: NaN, spr: NaN, sppFreqHz: NaN, spectralCentroidHz: NaN, spectralRolloffHz: NaN };
 
@@ -607,10 +718,12 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
             cachedJitter = pert.jitterPercent;
             cachedShimmer = pert.shimmerDb;
             cachedHnr = calculateHNR(buffer, ctx.sampleRate, f0);
+            cachedCpp = calculateCPP(buffer, ctx.sampleRate).cppDb;
 
             if (Number.isFinite(cachedJitter)) historyJitterRef.current.push(cachedJitter);
             if (Number.isFinite(cachedShimmer)) historyShimmerRef.current.push(cachedShimmer);
             if (Number.isFinite(cachedHnr)) historyHnrRef.current.push(cachedHnr);
+            if (Number.isFinite(cachedCpp)) historyCppRef.current.push(cachedCpp);
             if (Number.isFinite(cachedNoise)) historyNoiseRef.current.push(cachedNoise);
             if (Number.isFinite(cachedSfAndSpr.sfEnergyDb)) historySfEnergyRef.current.push(cachedSfAndSpr.sfEnergyDb);
             if (Number.isFinite(cachedSfAndSpr.spr)) historySprRef.current.push(cachedSfAndSpr.spr);
@@ -642,6 +755,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
               jitterPercent: Math.round(medianOfValid(historyJitterRef.current) * 100) / 100,
               shimmerDb: Math.round(medianOfValid(historyShimmerRef.current) * 100) / 100,
               hnrDb: Math.round(medianOfValid(historyHnrRef.current) * 10) / 10,
+              cppDb: Math.round(medianOfValid(historyCppRef.current) * 10) / 10,
               spectralNoiseDb: Math.round(medianOfValid(historyNoiseRef.current) * 10) / 10,
               spectralCentroidHz: Math.round(medianOfValid(historyCentroidRef.current)),
               spectralRolloffHz: Math.round(medianOfValid(historyRolloffRef.current)),
@@ -652,6 +766,39 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
             };
 
             setFinalMetrics(evaluationMetrics);
+
+            const now = new Date();
+            const day = String(now.getDate()).padStart(2, '0');
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const year = now.getFullYear();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const formattedTimestamp = `${day}/${month}/${year} ${hours}:${minutes}`;
+
+            setCurrentAnalysisTimestamp(formattedTimestamp);
+
+            const recordId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+            setCurrentAnalysisRecordId(recordId);
+
+            const newRecord: SavedAnalysisRecord = {
+              id: recordId,
+              timestamp: formattedTimestamp,
+              metrics: evaluationMetrics,
+              scaleMaeCents: overallAverageMae,
+              mpfr: mpfr
+            };
+
+            try {
+              const currentSaved = localStorage.getItem(STORAGE_KEY);
+              const history: SavedAnalysisRecord[] = currentSaved ? JSON.parse(currentSaved) : [];
+              const updatedHistory = [...history, newRecord];
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedHistory));
+              setHistoryRecords(updatedHistory);
+              setCurrentHistoryIndex(updatedHistory.length - 1);
+            } catch (err) {
+              console.error('Błąd zapisu do localStorage', err);
+            }
+
             setStage('METRICS_REVIEW');
             return;
           }
@@ -670,12 +817,52 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
     return { midi, note, isBlack };
   });
 
+  const handleDeleteRecord = (recordId: string, isCurrentReview = false) => {
+    const confirmDelete = window.confirm("Czy na pewno chcesz usunąć tę analizę?");
+    if (!confirmDelete) return;
+
+    try {
+      const updated = historyRecords.filter(r => r.id !== recordId);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      setHistoryRecords(updated);
+
+      if (isCurrentReview) {
+        if (updated.length > 0) {
+          setCurrentHistoryIndex(updated.length - 1);
+          setStage('HISTORY_REVIEW');
+        } else {
+          onBack();
+        }
+      } else {
+        if (currentHistoryIndex >= updated.length) {
+          setCurrentHistoryIndex(Math.max(0, updated.length - 1));
+        }
+      }
+    } catch (err) {
+      console.error('Błąd usuwania rekordu', err);
+    }
+  };
+
+  const activeArchiveRecord: SavedAnalysisRecord | null =
+    historyRecords.length > 0 ? (historyRecords[currentHistoryIndex] ?? null) : null;
+
+  const canGoPrev = currentHistoryIndex > 0;
+  const canGoNext = currentHistoryIndex < historyRecords.length - 1;
+
+  const handlePrevHistory = () => {
+    if (canGoPrev) setCurrentHistoryIndex(prev => prev - 1);
+  };
+
+  const handleNextHistory = () => {
+    if (canGoNext) setCurrentHistoryIndex(prev => prev + 1);
+  };
+
   return (
-    <div className={`w-full ${stage === 'METRICS_REVIEW' ? 'h-screen overflow-hidden' : 'min-h-screen py-6'} flex flex-col items-center justify-between px-4 relative z-10 font-cardo text-white`}>
+    <div className={`w-full ${stage === 'METRICS_REVIEW' || stage === 'HISTORY_REVIEW' ? 'h-screen overflow-hidden' : 'min-h-screen py-6'} flex flex-col items-center justify-between px-4 relative z-10 font-cardo text-white`}>
       
       {(stage === 'SCALE_UP_TEST' || stage === 'SCALE_DOWN_TEST') && (
         <div className="w-full max-w-6xl my-auto flex flex-col items-center gap-4">
-          <div className="text-center">
+          <div className="text-center relative w-full flex flex-col items-center">
             <span className="text-xs uppercase tracking-widest text-white/60 block mb-1">
               Etap 1: Badanie Skali ({stage === 'SCALE_UP_TEST' ? 'W Górę' : 'W Dół'})
             </span>
@@ -685,10 +872,18 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
             <p className="text-xs opacity-70 mt-1">
               Powtórz usłyszany dźwięk i utrzymaj go przez chwilę
             </p>
+
+            <button
+              type="button"
+              onClick={handleSkipScale}
+              className="mt-2 text-xs uppercase tracking-wider text-white/80 hover:text-white bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-1.5 rounded-full transition-all cursor-pointer shadow-sm"
+            >
+              Pomiń badanie skali →
+            </button>
           </div>
 
           <div className="w-full max-w-4xl relative flex justify-center py-2 select-none">
-            <div className="flex relative w-full bg-black/60 backdrop-blur-md p-3 rounded-2xl border border-white/20 shadow-2xl h-40 sm:h-48">
+            <div className="flex relative w-full bg-black/60 backdrop-blur-md p-3 rounded-2xl border border-white/20 shadow-2xl h-40 sm:h-48 overflow-hidden">
               {keyboardKeys
                 .filter(k => !k.isBlack)
                 .map(whiteKey => {
@@ -706,14 +901,14 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
                   let whiteBg = 'bg-white/95 text-zinc-800 hover:bg-white cursor-pointer';
                   if (isGreen) whiteBg = '!bg-emerald-500 !text-white';
                   if (isRed) whiteBg = '!bg-rose-600 !text-white animate-pulse';
-                  if (isTarget && !isRed) whiteBg = '!bg-[#7d94de] !text-white scale-[1.02] ring-2 ring-white';
+                  if (isTarget && !isRed) whiteBg = '!bg-[#7d94de] !text-white shadow-inner';
 
                   return (
                     <div key={whiteKey.midi} className="relative flex-1 h-full">
                       <button
                         type="button"
                         onClick={() => handleKeyClick(whiteKey.midi)}
-                        className={`w-full h-full rounded-b-lg border-r border-zinc-300 flex flex-col justify-end pb-2 items-center transition-all focus:outline-none ${whiteBg}`}
+                        className={`w-full h-full rounded-b-lg border-r border-zinc-300 flex flex-col justify-end pb-2 items-center transition-colors focus:outline-none ${whiteBg}`}
                       >
                         <span className="text-[9px] font-bold opacity-75 pointer-events-none">{whiteKey.note}</span>
                       </button>
@@ -725,11 +920,19 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
                             e.stopPropagation();
                             handleKeyClick(blackKey.midi);
                           }}
-                          className={`absolute top-0 right-[-32%] w-[64%] h-[60%] z-20 rounded-b-md border border-zinc-700 flex flex-col justify-end pb-1 items-center transition-all focus:outline-none cursor-pointer ${
-                            isBlackGreen ? '!bg-emerald-500 !text-white' : isBlackRed ? '!bg-rose-600 !text-white animate-pulse' : isBlackTarget ? '!bg-[#7d94de] !text-white ring-2 ring-white' : 'bg-zinc-900 text-white hover:bg-zinc-800'
+                          className={`absolute top-0 right-[-32%] w-[64%] h-[60%] z-20 rounded-b-md border border-zinc-700 flex flex-col justify-end pb-1 items-center transition-colors focus:outline-none cursor-pointer ${
+                            isBlackGreen
+                              ? '!bg-emerald-500 !text-white'
+                              : isBlackRed
+                              ? '!bg-rose-600 !text-white animate-pulse'
+                              : isBlackTarget
+                              ? '!bg-[#7d94de] !text-white shadow-inner'
+                              : 'bg-zinc-900 text-white hover:bg-zinc-800'
                           }`}
                         >
-                          <span className="text-[7px] font-bold opacity-80 pointer-events-none">{blackKey.note.replace('#', '♯')}</span>
+                          <span className="text-[7px] font-bold opacity-80 pointer-events-none">
+                            {blackKey.note.replace('#', '♯')}
+                          </span>
                         </button>
                       )}
                     </div>
@@ -737,9 +940,9 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
                 })}
             </div>
           </div>
-
+          
           {(() => {
-            const targetFreq = midiToFreq(currentMidi);
+            const targetFreq = getCalibratedMidiFreq(currentMidi);
             const targetNote = midiToNoteName(currentMidi);
             const hasVoice = currentF0 > 0;
             
@@ -908,7 +1111,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
               ⟲ Powtórz dół
             </button>
             <button
-              onClick={initMultidisciplinaryTest}
+              onClick={() => initMultidisciplinaryTest(false)}
               className="flex-1 font-cardo text-sm py-3 px-4 rounded-xl uppercase tracking-wider text-[#18388f] bg-[rgba(255,255,255,0.65)] hover:bg-[rgba(125,148,222,0.85)] hover:text-white transition-all border-none cursor-pointer shadow-md font-bold"
             >
               PRZEJDŹ DALEJ →
@@ -940,16 +1143,39 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
         </div>
       )}
 
+      {/* Widok 1: Podsumowanie bieżącej analizy */}
       {stage === 'METRICS_REVIEW' && (
         <div className="w-full h-full flex flex-col justify-center items-center px-4 sm:px-8 max-w-[1140px] mx-auto select-none overflow-hidden">
           
-          <div className="text-center mb-3">
-            <h1 className="font-seasons font-normal text-3xl sm:text-4xl md:text-[40px] tracking-[0.05em] text-white uppercase drop-shadow-sm leading-tight">
-              WYNIKI ANALIZY GŁOSU
-            </h1>
-            <p className="font-cardo font-normal text-sm sm:text-[15px] text-white/95 mt-1 tracking-wide">
-              Kliknij w wybrany parametr, aby dowiedzieć się więcej
-            </p>
+          <div className="w-full relative flex flex-col items-center mb-2">
+            {currentAnalysisTimestamp && (
+              <div className="w-full flex justify-end items-center mb-1 pr-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-seasons font-light text-white/90 text-sm tracking-wide">
+                    {currentAnalysisTimestamp}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteRecord(currentAnalysisRecordId, true)}
+                    title="Usuń tę analizę"
+                    className="p-1 rounded cursor-pointer text-white/80 hover:text-white transition-opacity bg-transparent border-none"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="text-center">
+              <h1 className="font-seasons font-normal text-3xl sm:text-4xl md:text-[40px] tracking-[0.05em] text-white uppercase drop-shadow-sm leading-tight">
+                WYNIKI ANALIZY GŁOSU
+              </h1>
+              <p className="font-cardo font-normal text-sm sm:text-[15px] text-white/95 mt-1 tracking-wide">
+                Kliknij w wybrany parametr, aby dowiedzieć się więcej
+              </p>
+            </div>
           </div>
 
           <div className="w-full grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-3.5 my-1">
@@ -976,20 +1202,169 @@ export default function VoiceAnalysis({ onBack, onGoToExercises }: VoiceAnalysis
             ))}
           </div>
 
+          <div className="flex flex-row flex-wrap justify-center items-center gap-3 sm:gap-4 mt-4">
+            <button
+              type="button"
+              onClick={startScaleUpFlow}
+              className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-4 sm:px-6 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
+            >
+              POWTÓRZ CAŁĄ ANALIZĘ
+            </button>
+            <button
+              type="button"
+              onClick={() => initMultidisciplinaryTest(mpfrResult === null)}
+              className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-4 sm:px-6 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
+            >
+              POWTÓRZ DŹWIĘK [A]
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (historyRecords.length > 0) {
+                  setCurrentHistoryIndex(historyRecords.length - 1);
+                }
+                setStage('HISTORY_REVIEW');
+              }}
+              className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-4 sm:px-6 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
+            >
+              PRZEJDŹ DO ARCHIWUM ANALIZ
+            </button>
+            <button
+              type="button"
+              onClick={onGoToExercises ?? onBack}
+              className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-4 sm:px-6 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
+            >
+              PRZEJDŹ DO ĆWICZEŃ
+            </button>
+          </div>
+
+        </div>
+      )}
+
+      {/* Widok 2: Przeglądanie archiwum analiz */}
+      {stage === 'HISTORY_REVIEW' && (
+        <div className="w-full h-full flex flex-col justify-center items-center px-2 sm:px-6 max-w-[1240px] mx-auto select-none overflow-hidden">
+          
+          <div className="w-full relative flex flex-col items-center mb-2">
+            {activeArchiveRecord && (
+              <div className="w-full flex justify-end items-center mb-1 pr-2 sm:pr-4">
+                <div className="flex items-center gap-2">
+                  <span className="font-seasons font-light text-white/90 text-sm tracking-wide">
+                    {activeArchiveRecord.timestamp}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteRecord(activeArchiveRecord.id)}
+                    title="Usuń tę analizę"
+                    className="p-1 rounded cursor-pointer text-white/80 hover:text-white transition-opacity bg-transparent border-none"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="text-center">
+              <h1 className="font-seasons font-normal text-3xl sm:text-4xl md:text-[40px] tracking-[0.05em] text-white uppercase drop-shadow-sm leading-tight">
+                ZAPISANE WYNIKI ANALIZ
+              </h1>
+              <p className="font-cardo font-normal text-sm sm:text-[15px] text-white/95 mt-1 tracking-wide">
+                {historyRecords.length > 0
+                  ? 'Przewijaj strzałkami lewo/prawo, aby porównać postępy'
+                  : 'Brak zapisanych analiz w pamięci urządzenia'}
+              </p>
+            </div>
+          </div>
+
+          <div className="w-full flex items-center justify-center gap-2 sm:gap-6 my-1">
+            {historyRecords.length > 1 ? (
+              <button
+                type="button"
+                onClick={handlePrevHistory}
+                disabled={!canGoPrev}
+                title="Starsza analiza"
+                className={`p-2 sm:p-3 bg-transparent border-none cursor-pointer transition-all flex-shrink-0 ${
+                  canGoPrev
+                    ? 'text-white hover:scale-125 active:scale-95'
+                    : 'text-white/15 cursor-not-allowed pointer-events-none'
+                }`}
+              >
+                <svg className="w-7 h-10 sm:w-9 sm:h-14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            ) : (
+              <div className="w-7 sm:w-9 flex-shrink-0" />
+            )}
+
+            {activeArchiveRecord ? (
+              <div className="flex-1 max-w-[1080px] grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-3.5">
+                {evaluateFeedbackMetrics(activeArchiveRecord.metrics, activeArchiveRecord.scaleMaeCents, activeArchiveRecord.mpfr).map((item) => (
+                  <div
+                    key={item.id}
+                    className="bg-white/40 hover:bg-white/50 backdrop-blur-md rounded-xl py-3 px-3 flex flex-col items-center justify-between text-center shadow-md border border-white/35 transition-all duration-200 cursor-pointer hover:scale-[1.01] min-h-[114px] sm:min-h-[120px]"
+                  >
+                    <h3 className="font-seasons font-normal text-[14px] sm:text-[15px] text-[#18388f] leading-tight">
+                      {item.label}
+                    </h3>
+                    
+                    <span
+                      className="font-seasons font-normal text-[17px] sm:text-[19px] tracking-wide my-0.5 leading-none"
+                      style={{ color: item.valueColor }}
+                    >
+                      {item.displayValue}
+                    </span>
+
+                    <p className="font-cardo font-normal text-[11px] sm:text-[11.5px] text-[#466cd2] leading-[1.25] px-1 line-clamp-3">
+                      {item.comment}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex-1 max-w-md py-12 flex flex-col items-center justify-center bg-black/30 backdrop-blur-md rounded-2xl border border-white/20 text-center my-4">
+                <p className="text-sm opacity-80 mb-2">Nie masz zapisanych żadnych analiz.</p>
+                <span className="text-xs opacity-60">Wykonaj badanie, a wynik pojawi się w tym miejscu.</span>
+              </div>
+            )}
+
+            {historyRecords.length > 1 ? (
+              <button
+                type="button"
+                onClick={handleNextHistory}
+                disabled={!canGoNext}
+                title="Nowsza analiza"
+                className={`p-2 sm:p-3 bg-transparent border-none cursor-pointer transition-all flex-shrink-0 ${
+                  canGoNext
+                    ? 'text-white hover:scale-125 active:scale-95'
+                    : 'text-white/15 cursor-not-allowed pointer-events-none'
+                }`}
+              >
+                <svg className="w-7 h-10 sm:w-9 sm:h-14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            ) : (
+              <div className="w-7 sm:w-9 flex-shrink-0" />
+            )}
+          </div>
+
           <div className="flex flex-row justify-center items-center gap-5 mt-4">
             <button
               type="button"
               onClick={startScaleUpFlow}
               className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-7 sm:px-9 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
             >
-              POWTÓRZ ANALIZĘ
+              NOWA ANALIZA
             </button>
             <button
               type="button"
-              onClick={onGoToExercises ?? onBack}
+              onClick={onBack}
               className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-7 sm:px-9 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
             >
-              PRZEJDŹ DO ĆWICZEŃ
+              POWRÓT DO MENU
             </button>
           </div>
 
