@@ -24,7 +24,6 @@ const SECTIONS: ExerciseSection[] = [
   {
     tiles: [
       { id: 'prepare', icon: 'breath', title: 'Przygotowanie do ćwiczeń', description: 'Przygotuj się do ćwiczeń poprzez rozluźnienie i pracę nad oddechem' },
-      { id: 'vibrato-control', icon: 'vibrato', available: true, title: 'Minimalizacja wibrato', description: 'Ćwiczenie jest dedykowane dla chórzystów i pomaga dążyć do ograniczenia wibrato w śpiewie' },
       { id: 'stability', icon: 'stability', title: 'Stabilność tonu', description: 'Ćwiczenie pozwala ćwiczyć kontrolę stabilności tonu w zakresie Twojej skali' },
       { id: 'range', icon: 'range', title: 'Poszerzanie skali', description: 'Ćwicz dźwięki na granicy swojej skali, aby zwiększyć zakres swojego głosu' },
       { id: 'formant', icon: 'formant', title: 'Formant śpiewaczy', description: 'Kontroluj dźwięczność swojego głosu, aby wybrzmiewać nad instrumentami' },
@@ -35,6 +34,7 @@ const SECTIONS: ExerciseSection[] = [
   {
     heading: 'Dla chórzystów',
     tiles: [
+      { id: 'vibrato-control', icon: 'vibrato', available: true, title: 'Minimalizacja wibrato', description: 'Ćwicz utrzymywanie prostego dźwięku, aby ograniczyć wibrato w śpiewie chóralnym' },
       { id: 'chord', icon: 'chord', title: 'Dźwięk na tle akordu', description: 'Utrzymaj swoją nutę na tle nagranego akordu i uzupełnij go własnym głosem' },
       { id: 'timbre', icon: 'timbre', title: 'Dopasuj barwę', description: 'Dopasuj barwę swojego głosu do wzorca głosu Twojej sekcji' },
       { id: 'phrase', icon: 'phrase', title: 'Długa fraza', description: 'Utrzymaj wysokość dźwięku przez całą, długą frazę' }
@@ -79,7 +79,12 @@ function Tile({ tile, onOpen }: { tile: ExerciseTile; onOpen: (id: ExerciseId) =
   );
 }
 
-export default function Exercises({ onBack, initialExercise = null }: { onBack: () => void; initialExercise?: ExerciseId | null }) {
+interface ExercisesProps {
+  onBack?: () => void;
+  initialExercise?: ExerciseId | null;
+}
+
+export default function Exercises({ initialExercise = null }: ExercisesProps) {
   const [active, setActive] = useState<ExerciseId | null>(initialExercise);
 
   if (active === 'vibrato-control') {
@@ -88,13 +93,7 @@ export default function Exercises({ onBack, initialExercise = null }: { onBack: 
 
   return (
     <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white">
-      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 pt-24 sm:pt-8 pb-14 flex flex-col items-center">
-        <div className="w-full flex justify-start mb-2">
-          <button type="button" onClick={onBack} className="text-xs uppercase tracking-wider text-white/80 hover:text-white bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-1.5 rounded-full transition-all cursor-pointer shadow-sm">
-            ← Powrót do menu
-          </button>
-        </div>
-
+      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 pt-24 sm:pt-16 pb-14 flex flex-col items-center">
         <h1 className="font-seasons font-normal uppercase text-white text-3xl sm:text-4xl md:text-[44px] tracking-[0.05em] text-center mb-7 mt-1 drop-shadow-sm">
           Ćwiczenia wokalne
         </h1>

@@ -20,9 +20,12 @@ export function useMicPitch() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
+  /** Numer bieżącej pętli. Zmiana unieważnia pętlę, także gdy stopLoop wywołano z wnętrza onFrame. */
+  const loopIdRef = useRef(0);
   const [micState, setMicState] = useState<MicState>('idle');
 
   const stopLoop = useCallback(() => {
+    loopIdRef.current++;
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
   }, []);
@@ -72,11 +75,12 @@ export function useMicPitch() {
     const ctx = ctxRef.current;
     if (!analyser || !ctx) return;
     stopLoop();
+    const myLoop = loopIdRef.current;
     const buf = new Float32Array(analyser.fftSize);
     let lastCtxTime = -1;
 
     const tick = () => {
-      if (!analyserRef.current || !ctxRef.current) return;
+      if (myLoop !== loopIdRef.current || !analyserRef.current || !ctxRef.current) return;
       if (ctx.currentTime - lastCtxTime >= MIN_FRAME_INTERVAL_SEC) {
         lastCtxTime = ctx.currentTime;
         analyser.getFloatTimeDomainData(buf);
@@ -88,6 +92,7 @@ export function useMicPitch() {
           if (est >= 50 && est <= 1100) f0 = est;
         }
         onFrame({ time: performance.now() / 1000, f0, rms });
+        if (myLoop !== loopIdRef.current) return; // onFrame zatrzymał pętlę
       }
       rafRef.current = requestAnimationFrame(tick);
     };

@@ -9,13 +9,29 @@ interface PitchPlotProps {
   bandCents: number;
   /** Zakres osi pionowej: −range … +range centów. */
   rangeCents?: number;
-  bandLabel: string;
+  bandLabel?: string;
   targetLabel: string;
   /** Czy pokazywać „głowicę” (bieżący punkt). */
   running: boolean;
 }
 
-const GREEN = '74, 222, 128';
+const GREEN = '52, 211, 153'; // emerald-400, jak w analizie głosu
+
+type RGB = [number, number, number];
+const C_GOOD: RGB = [52, 211, 153]; // w pasmie
+const C_MID: RGB = [250, 204, 21]; // yellow-400, jak w analizie głosu
+const C_BAD: RGB = [244, 63, 94]; // nasycony czerwony
+
+const mix = (a: RGB, b: RGB, k: number): RGB => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+const rgbStr = (c: RGB) => `rgb(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])})`;
+
+/** Płynny kolor zależny od odległości od dźwięku: zielony w pasmie, potem żółty, potem czerwony. */
+function colorForCents(absCents: number, band: number): RGB {
+  if (absCents <= band) return C_GOOD;
+  if (absCents <= 2 * band) return mix(C_GOOD, C_MID, (absCents - band) / band);
+  if (absCents <= 3 * band) return mix(C_MID, C_BAD, (absCents - 2 * band) / band);
+  return C_BAD;
+}
 const PAD = { left: 46, right: 14, top: 14, bottom: 26 };
 
 export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents = 50, bandLabel, targetLabel, running }: PitchPlotProps) {
@@ -120,11 +136,11 @@ export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents 
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
       ctx.fillStyle = `rgba(190, 255, 215, ${inBandNow ? 1 : 0.85})`;
-      ctx.fillText(bLabel, x0 + 8, bTop - 3);
+      if (bLabel) ctx.fillText(bLabel, x0 + 8, bTop - 3);
 
-      // tor f0: odcinki między kolejnymi ramkami, kolor zależny od położenia względem pasma
-      ctx.lineWidth = 2.6;
-      ctx.lineCap = 'round';
+      // tor f0: kolor płynnie zależy od odległości od dźwięku wzorcowego, linia świeci
+      type Seg = { x0: number; y0: number; x1: number; y1: number; grad: CanvasGradient };
+      const segs: Seg[] = [];
       for (let i = 1; i < data.t.length; i++) {
         const c1 = data.cents[i] ?? NaN;
         const c0 = data.cents[i - 1] ?? NaN;
@@ -132,17 +148,32 @@ export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents 
         const t1 = data.t[i] ?? 0;
         const t0 = data.t[i - 1] ?? 0;
         if (t1 - t0 > 0.12) continue;
-        const a = Math.abs(c1);
-        ctx.strokeStyle = a <= band ? `rgb(${GREEN})` : a <= 2 * band ? 'rgb(251, 191, 36)' : 'rgb(251, 113, 133)';
-        ctx.beginPath(); ctx.moveTo(xOf(t0), yOf(c0)); ctx.lineTo(xOf(t1), yOf(c1)); ctx.stroke();
+        const sx0 = xOf(t0), sy0 = yOf(c0), sx1 = xOf(t1), sy1 = yOf(c1);
+        const grad = ctx.createLinearGradient(sx0, sy0, sx1, sy1);
+        grad.addColorStop(0, rgbStr(colorForCents(Math.abs(c0), band)));
+        grad.addColorStop(1, rgbStr(colorForCents(Math.abs(c1), band)));
+        segs.push({ x0: sx0, y0: sy0, x1: sx1, y1: sy1, grad });
       }
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      // poświata: kilka szerszych, półprzezroczystych przejść, a na końcu ostry rdzeń
+      const passes: [number, number][] = [[9, 0.05], [5.5, 0.12], [2.6, 1]];
+      for (const [w, alpha] of passes) {
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = w;
+        for (const sg of segs) {
+          ctx.strokeStyle = sg.grad;
+          ctx.beginPath(); ctx.moveTo(sg.x0, sg.y0); ctx.lineTo(sg.x1, sg.y1); ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
 
       // znaczniki, gdy dźwięk jest poza zakresem osi
       if (live && Math.abs(lastCents) > range) {
         const up = lastCents > 0;
         const x = xOf(lastT);
         const y = up ? y0 + 6 : y1 - 6;
-        ctx.fillStyle = 'rgb(251, 113, 133)';
+        ctx.fillStyle = rgbStr(C_BAD);
         ctx.beginPath();
         ctx.moveTo(x, y + (up ? -5 : 5)); ctx.lineTo(x - 6, y + (up ? 5 : -5)); ctx.lineTo(x + 6, y + (up ? 5 : -5)); ctx.closePath(); ctx.fill();
       }
@@ -152,8 +183,9 @@ export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents 
         const hx = xOf(lastT);
         const hy = yOf(lastCents);
         ctx.save();
-        ctx.shadowColor = inBandNow ? `rgba(${GREEN}, 1)` : 'rgba(255,255,255,.8)';
-        ctx.shadowBlur = 14;
+        const headColor = rgbStr(colorForCents(Math.abs(lastCents), band));
+        ctx.shadowColor = headColor;
+        ctx.shadowBlur = 18;
         ctx.fillStyle = '#fff';
         ctx.beginPath(); ctx.arc(hx, hy, 5, 0, Math.PI * 2); ctx.fill();
         ctx.restore();

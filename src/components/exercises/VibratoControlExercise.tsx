@@ -20,7 +20,7 @@ import {
   type AttemptStats
 } from '../../utils/vibratoExercise';
 
-type Phase = 'setup' | 'listen' | 'sing' | 'result';
+type Phase = 'setup' | 'countdown' | 'sing' | 'result';
 
 /** Długość śpiewania liczona od pierwszego wykrytego dźwięku. */
 const SING_SECONDS = 10;
@@ -70,6 +70,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
   const [live, setLive] = useState<{ f0: number; cents: number } | null>(null);
   const [result, setResult] = useState<{ stats: AttemptStats; feedback: AttemptFeedback } | null>(null);
   const [previewPlaying, setPreviewPlaying] = useState(false);
+  const [countdown, setCountdown] = useState(3);
 
   const mic = useMicPitch();
   const dataRef = useRef<AttemptData>({ t: [], cents: [], hz: [] });
@@ -94,7 +95,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
   const finish = () => {
     if (finishedRef.current) return;
     finishedRef.current = true;
-    mic.stopLoop();
+    mic.close();
     const stats = computeAttemptStats(dataRef.current, VIBRATO_BAND_CENTS);
     setResult({ stats, feedback: buildFeedback(stats, VIBRATO_BAND_CENTS) });
     setLive(null);
@@ -128,28 +129,36 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
 
   const begin = async () => {
     const runId = ++runIdRef.current;
+    const stale = () => runId !== runIdRef.current;
     playbackRef.current?.cancel();
+    mic.stopLoop();
     setPreviewPlaying(false);
     const ok = await mic.open();
-    if (!ok || runId !== runIdRef.current) return;
+    if (!ok || stale()) return;
 
     dataRef.current = { t: [], cents: [], hz: [] };
     startedRef.current = false;
     finishedRef.current = false;
     streakRef.current = 0;
+    lastUiRef.current = 0;
     setStarted(false);
     setElapsed(0);
     setLive(null);
     setResult(null);
-    setPhase('listen');
 
+    // dźwięk wzorcowy i od razu odliczanie 3, 2, 1 (mikrofon jeszcze niczego nie rejestruje)
     const playback = playReferenceNote(targetMidi);
     playbackRef.current = playback;
-    await playback.done;
-    if (runId !== runIdRef.current) return;
-    await sleep(350); // wybrzmienie dźwięku, żeby nie trafił do mikrofonu
-    if (runId !== runIdRef.current) return;
+    for (let n = 3; n >= 1; n--) {
+      setCountdown(n);
+      setPhase('countdown');
+      await sleep(1000);
+      if (stale()) return;
+    }
+    await playback.done; // dźwięk wzorcowy musi całkiem wybrzmieć, zanim zacznie się rejestracja
+    if (stale()) return;
 
+    // 3. rejestracja głosu
     setPhase('sing');
     mic.startLoop(onFrame);
   };
@@ -157,7 +166,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
   const cancelRun = () => {
     runIdRef.current++;
     playbackRef.current?.cancel();
-    mic.stopLoop();
+    mic.close();
     finishedRef.current = true;
     setPhase('setup');
     setStarted(false);
@@ -180,23 +189,9 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
   };
 
   const bandSemisLabel = formatDecimalPl(VIBRATO_BAND_SEMITONES, 1);
-  const bandLabel = `±${bandSemisLabel} półtonu`;
   const inBandNow = live !== null && Math.abs(live.cents) <= VIBRATO_BAND_CENTS;
   const progress = Math.round((elapsed / SING_SECONDS) * 100);
   const micProblem = mic.micState === 'denied' || mic.micState === 'error';
-
-  let overlayTitle = '';
-  let overlaySub = '';
-  if (phase === 'setup') {
-    overlayTitle = 'Cel: zielone pasmo';
-    overlaySub = 'Zaśpiewaj długi, równy dźwięk tak, by wykres mieścił się w zielonym pasku';
-  } else if (phase === 'listen') {
-    overlayTitle = 'Słuchaj dźwięku wzorcowego…';
-    overlaySub = targetName;
-  } else if (phase === 'sing' && !started) {
-    overlayTitle = 'Śpiewaj ten dźwięk na samogłosce [A]';
-    overlaySub = 'Wykres ruszy, gdy usłyszę Twój głos';
-  }
 
   const stats = result?.stats;
   const metricTiles = stats
@@ -244,7 +239,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
 
   return (
     <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white select-none">
-      <div className="max-w-5xl mx-auto px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5">
+      <div className={`max-w-5xl mx-auto min-h-full px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5 relative`}>
         <div className="w-full flex justify-start">
           <button
             type="button"
@@ -260,33 +255,29 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
           <h1 className="font-seasons font-normal text-3xl sm:text-4xl md:text-[40px] tracking-[0.05em] uppercase drop-shadow-sm leading-tight">
             Minimalizacja wibrato
           </h1>
-          <p className="text-sm sm:text-[15px] text-white/90 mt-1 tracking-wide">
-            Utrzymaj dźwięk prosto, bez falowania. Wykres pokazuje Twój głos na żywo.
-          </p>
         </div>
 
-        {/* Wykres f0 */}
+        {/* Wykres f0 (przed startem widoczna jest tylko instrukcja) */}
+        {phase !== 'setup' && (
         <div className="w-full bg-black/35 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-3 sm:p-4 flex flex-col gap-3">
           <div className="relative w-full h-[280px] sm:h-[340px]">
             <PitchPlot
               dataRef={dataRef}
               durationSec={SING_SECONDS}
               bandCents={VIBRATO_BAND_CENTS}
-              bandLabel={`zielone pasmo: ${bandLabel}`}
               targetLabel={targetName}
               running={phase === 'sing'}
             />
-            {overlayTitle && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none px-6">
-                <span className={`font-seasons uppercase tracking-wider text-lg sm:text-2xl text-white/90 drop-shadow ${phase !== 'setup' ? 'animate-pulse' : ''}`}>
-                  {overlayTitle}
+            {phase === 'countdown' && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span key={countdown} className="ex-countdown font-cardo text-white/90 text-[56px] sm:text-[72px] leading-none drop-shadow-md">
+                  {countdown}
                 </span>
-                <span className="text-sm text-white/70 mt-1 max-w-md">{overlaySub}</span>
               </div>
             )}
           </div>
 
-          {(phase === 'sing' || phase === 'listen') && (
+          {phase !== 'result' && (
             <div className="w-full flex flex-col gap-2">
               <div className="w-full flex items-center justify-between text-xs sm:text-sm">
                 <div className="flex flex-col items-start">
@@ -326,6 +317,8 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
           )}
         </div>
 
+        )}
+
         {micProblem && (
           <div className="w-full max-w-2xl bg-rose-500/25 border border-rose-200/40 rounded-xl px-4 py-3 text-sm text-center">
             {mic.micState === 'denied'
@@ -336,11 +329,12 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
 
         {/* Ustawienia przed startem */}
         {phase === 'setup' && (
-          <div className="w-full max-w-3xl bg-white/40 backdrop-blur-md rounded-2xl border border-white/35 shadow-md p-5 sm:p-6 text-[#18388f] flex flex-col gap-5">
+          <div className="w-full sm:fixed sm:inset-0 sm:flex sm:items-center sm:justify-center sm:px-8 sm:pointer-events-none">
+          <div className="w-full max-w-3xl sm:pointer-events-auto bg-white/40 backdrop-blur-md rounded-2xl border border-white/35 shadow-md p-5 sm:p-6 text-[#18388f] flex flex-col gap-5">
             <ol className="font-cardo text-[14px] sm:text-[15px] text-[#2c49a8] leading-snug list-decimal pl-5 flex flex-col gap-1.5">
-              <li>Zagram dźwięk wzorcowy. Posłuchaj go uważnie.</li>
-              <li>Zaśpiewaj ten dźwięk na samogłosce [A] i trzymaj go przez {SING_SECONDS} sekund, bez wibrato.</li>
-              <li>Staraj się, by linia na wykresie mieściła się w zielonym pasku (±{bandSemisLabel} półtonu od dźwięku wzorcowego).</li>
+              <li>Usłyszysz dźwięk wzorcowy. Posłuchaj go uważnie.</li>
+              <li>Po odliczaniu zaśpiewaj ten dźwięk na samogłosce [A] i trzymaj go przez {SING_SECONDS} sekund, bez wibrato.</li>
+              <li>Staraj się, by linia na wykresie mieściła się w zielonym polu (±{bandSemisLabel} półtonu od dźwięku wzorcowego).</li>
               <li className="list-none -ml-5 pl-5 text-[13px] text-[#466cd2] opacity-90">
                 Jeśli dźwięk jest dla Ciebie za wysoki lub za niski, śpiewaj oktawę niżej lub wyżej, aplikacja to uwzględni.
               </li>
@@ -361,6 +355,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
                 <button type="button" onClick={() => void begin()} className={BTN_PRIMARY}>Rozpocznij ćwiczenie</button>
               </div>
             </div>
+          </div>
           </div>
         )}
 
@@ -394,6 +389,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
           </div>
         )}
       </div>
+
     </div>
   );
 }

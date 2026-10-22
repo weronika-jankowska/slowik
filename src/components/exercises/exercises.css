@@ -68,3 +68,12 @@
   .ex-mouth { transform: scaleY(.6); }
   .ex-swell, .ex-wave-toggle { transform: scaleY(.7); }
 }
+
+/* Odliczanie 3-2-1 w ćwiczeniach */
+@keyframes ex-countdown-pop {
+  0% { opacity: 0; transform: scale(1.35); }
+  25% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0.35; transform: scale(0.9); }
+}
+.ex-countdown { animation: ex-countdown-pop 1s ease-out both; }
+@media (prefers-reduced-motion: reduce) { .ex-countdown { animation: none; } }
