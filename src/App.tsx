@@ -1,11 +1,63 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense, type ComponentType } from 'react';
 import VoiceAnalysis from './components/VoiceAnalysis';
 import Exercises from './components/Exercises';
+import { navPush, navReplace, useNavListener } from './utils/navHistory';
+
+type View = 'home' | 'analysis' | 'history' | 'exercises' | 'lab';
+
+// okno „Próbki głosu” (Ctrl + G)
+const labLoader = import.meta.glob<{ default: ComponentType<{ onBack: () => void }> }>('./components/lab/BreathinessLab.tsx')['./components/lab/BreathinessLab.tsx'];
+const BreathinessLab = labLoader ? lazy(labLoader) : null;
 
 export default function App() {
   const [logoPosition, setLogoPosition] = useState<'center' | 'top-left'>('center');
   const [showContent, setShowContent] = useState<boolean>(false);
-  const [currentView, setCurrentView] = useState<'home' | 'analysis' | 'history' | 'exercises'>('home');
+  const [currentView, setCurrentView] = useState<View>('home');
+
+  useEffect(() => { navReplace({ view: 'home' }); }, []);
+  useNavListener((st) => {
+    const v = st.view;
+    if (v === 'analysis') {
+      // powrót do zakończonej analizy nie uruchamia nowego badania
+      navReplace({ view: 'history' });
+      setCurrentView('history');
+      return;
+    }
+    setCurrentView(v === 'history' || v === 'exercises' || v === 'lab' ? v : 'home');
+  });
+  const go = (v: View) => {
+    if (v === currentView) return;
+    navPush({ view: v });
+    setCurrentView(v);
+  };
+
+  // ukryte okno „Próbki głosu”
+  const goRef = useRef(go);
+  goRef.current = go;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isG = e.code === 'KeyG' || e.key.toLowerCase() === 'g';
+      if (BreathinessLab && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && isG) {
+        e.preventDefault();
+        e.stopPropagation();
+        goRef.current('lab');
+      }
+    };
+    const onHash = () => {
+      if (BreathinessLab && window.location.hash === '#probki') {
+        history.replaceState(history.state, '', window.location.pathname);
+        goRef.current('lab');
+      }
+    };
+    // faza przechwytywania
+    window.addEventListener('keydown', onKey, { capture: true });
+    window.addEventListener('hashchange', onHash);
+    onHash();
+    return () => {
+      window.removeEventListener('keydown', onKey, { capture: true });
+      window.removeEventListener('hashchange', onHash);
+    };
+  }, []);
 
   useEffect(() => {
     const timer1 = setTimeout(() => {
@@ -22,9 +74,22 @@ export default function App() {
     };
   }, []);
 
+  // na telefonie logo w rogu nachodziło na przewijaną treść
+  const [logoHidden, setLogoHidden] = useState(false);
+  useEffect(() => {
+    const onScroll = (e: Event) => {
+      const el = e.target instanceof Element ? e.target : document.scrollingElement;
+      const top = el ? el.scrollTop : 0;
+      setLogoHidden(window.innerWidth < 640 && top > 40);
+    };
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    return () => document.removeEventListener('scroll', onScroll, { capture: true });
+  }, []);
+  useEffect(() => { setLogoHidden(false); }, [currentView]);
+
   const handleLogoClick = () => {
     if (logoPosition === 'top-left') {
-      setCurrentView('home');
+      go('home');
     }
   };
 
@@ -36,11 +101,11 @@ export default function App() {
       {/* Dynamiczne i klikalne Logo */}
       <div 
         onClick={handleLogoClick}
-        className={`fixed z-50 transition-all duration-1000 ease-in-out flex items-center justify-center select-none ${
+        className={`fixed z-50 transition-all ${showContent ? 'duration-300' : 'duration-1000'} ease-in-out flex items-center justify-center select-none ${
           logoPosition === 'center'
             ? 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 md:w-64'
-            : 'top-6 left-6 translate-x-0 translate-y-0 w-16 md:w-20 cursor-pointer hover:opacity-85'
-        }`}
+            : 'top-6 left-6 translate-x-0 translate-y-0 w-16 md:w-20 [@media(max-height:500px)]:top-2 [@media(max-height:500px)]:left-2 [@media(max-height:500px)]:w-9 cursor-pointer hover:opacity-85'
+        } ${logoHidden ? 'opacity-0 pointer-events-none' : ''}`}
         title={logoPosition === 'top-left' ? 'Powrót do menu głównego' : undefined}
       >
         <img 
@@ -67,21 +132,21 @@ export default function App() {
 
           <div className="flex flex-col gap-4 w-full max-w-md">
             <button
-              onClick={() => setCurrentView('analysis')}
+              onClick={() => go('analysis')}
               className="font-cardo text-sm md:text-xl py-4 px-6 rounded-xl tracking-wider text-center uppercase text-[#18388f] bg-[rgba(255,255,255,0.25)] hover:bg-[rgba(125,148,222,0.55)] transition-all duration-300 active:scale-98 shadow-md backdrop-blur-xs focus:outline-none border-none cursor-pointer"
             >
               ROZPOCZNIJ ANALIZĘ GŁOSU
             </button>
 
             <button
-              onClick={() => setCurrentView('history')}
+              onClick={() => go('history')}
               className="font-cardo text-sm md:text-xl py-4 px-6 rounded-xl tracking-wider text-center uppercase text-[#18388f] bg-[rgba(255,255,255,0.25)] hover:bg-[rgba(125,148,222,0.55)] transition-all duration-300 active:scale-98 shadow-md backdrop-blur-xs focus:outline-none border-none cursor-pointer"
             >
               ZAPISANE WYNIKI ANALIZ
             </button>
 
             <button
-              onClick={() => setCurrentView('exercises')}
+              onClick={() => go('exercises')}
               className="font-cardo text-sm md:text-xl py-4 px-6 rounded-xl tracking-wider text-center uppercase text-[#18388f] bg-[rgba(255,255,255,0.25)] hover:bg-[rgba(125,148,222,0.55)] transition-all duration-300 active:scale-98 shadow-md backdrop-blur-xs focus:outline-none border-none cursor-pointer"
             >
               PRZEJDŹ DO ĆWICZEŃ
@@ -94,8 +159,8 @@ export default function App() {
       {currentView === 'analysis' && (
         <VoiceAnalysis 
           initialMode="test"
-          onBack={() => setCurrentView('home')} 
-          onGoToExercises={() => setCurrentView('exercises')} 
+          onBack={() => go('home')} 
+          onGoToExercises={() => go('exercises')} 
         />
       )}
 
@@ -103,14 +168,17 @@ export default function App() {
       {currentView === 'history' && (
         <VoiceAnalysis 
           initialMode="history"
-          onBack={() => setCurrentView('home')} 
-          onGoToExercises={() => setCurrentView('exercises')} 
+          onBack={() => go('home')} 
+          onGoToExercises={() => go('exercises')} 
         />
       )}
 
+      {/* Widok 5: Próbki głosu (ukryte, chronione hasłem) */}
+      {currentView === 'lab' && BreathinessLab && <Suspense fallback={null}><BreathinessLab onBack={() => go('home')} /></Suspense>}
+
       {/* Widok 4: Ćwiczenia */}
       {currentView === 'exercises' && (
-        <Exercises onBack={() => setCurrentView('home')} />
+        <Exercises onBack={() => go('home')} />
       )}
     </div>
   );

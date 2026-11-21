@@ -6,7 +6,7 @@ export interface VibratoMetrics {
   rateHz: number;
   extentPercent: number;
   onsetDelaySec: number;
-  sinusoidality: number; // R^2 względem idealnej sinusoidy
+  sinusoidality: number; // VIB_S (Żwan, Kostek 2008)
 }
 
 export interface MPFRData {

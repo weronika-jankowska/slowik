@@ -1,7 +1,5 @@
-// Wspólne funkcje nutowe i odtwarzanie dźwięku wzorcowego (używane przez ćwiczenia).
-// Zachowują konwencje z VoiceAnalysis.tsx: próbki /piano-mp3/<Nuta><oktawa>.mp3 (bemole)
-// i skalibrowane częstotliwości z pianoFrequencies.json (fallback: strój 440 Hz).
 import pianoFrequenciesData from './pianoFrequencies.json';
+import { audioDebug, pianoSampler, referenceSampleFolder } from './pianoSampler';
 
 const CALIBRATED_FREQUENCIES: Record<string, number> = pianoFrequenciesData as Record<string, number>;
 
@@ -27,14 +25,11 @@ export const getCalibratedMidiFreq = (midi: number): number => {
 /** Różnica f względem fRef w centach. */
 export const centsBetween = (f: number, fRef: number): number => 1200 * Math.log2(f / fRef);
 
-/** Zwija różnicę w centach do najbliższej oktawy (−600…+600): śpiewanie oktawę wyżej/niżej jest OK. */
+/** Zwija różnicę w centach do najbliższej oktawy (−600…+600) */
 export const foldCentsToOctave = (cents: number): number => cents - 1200 * Math.round(cents / 1200);
 
 export const formatDecimalPl = (value: number, digits = 1): string => value.toFixed(digits).replace('.', ',');
 
-// ---------------------------------------------------------------------------
-// Dźwięk wzorcowy: próbka pianina, a gdy jej brak / przeglądarka blokuje odtwarzanie — prosty syntezator.
-// ---------------------------------------------------------------------------
 export interface ReferencePlayback {
   /** Resolve po zakończeniu (lub anulowaniu) dźwięku. */
   done: Promise<void>;
@@ -107,11 +102,12 @@ export function playReferenceNote(midi: number, durationMs = 2600): ReferencePla
   };
 
   try {
-    audio = new Audio(`/piano-mp3/${midiToSampleFilename(midi)}`);
+    audio = new Audio(`${referenceSampleFolder(pianoSampler.isMicOpen())}/${midiToSampleFilename(midi)}`);
     audio.volume = 0.85;
-    audio.addEventListener('error', useFallback, { once: true });
+    audio.addEventListener('error', () => { audioDebug('reference <audio> error', { midi }); useFallback(); }, { once: true });
     audio.play().then(() => {
-      // próbka pianina ma długi wybrzmiewający ogon – tniemy ją z krótkim wyciszeniem
+      audioDebug('reference <audio> playing', { midi });
+      // próbka pianina ma długi wybrzmiewający ogon
       timers.push(window.setTimeout(() => {
         if (!audio) return;
         const a = audio;
@@ -120,7 +116,7 @@ export function playReferenceNote(midi: number, durationMs = 2600): ReferencePla
           if (a.volume <= 0.01) { window.clearInterval(fade); a.pause(); finish(); }
         }, 30);
       }, Math.max(0, durationMs - 300)));
-    }).catch(useFallback);
+    }).catch((e) => { audioDebug('reference <audio> play rejected', { midi, err: String(e) }); useFallback(); });
   } catch {
     useFallback();
   }

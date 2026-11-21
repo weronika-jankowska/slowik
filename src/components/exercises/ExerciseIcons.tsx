@@ -3,9 +3,9 @@ import './exercises.css';
 
 export type ExerciseIconName =
   | 'breath' | 'vibrato' | 'stability' | 'range' | 'formant' | 'trill'
-  | 'voicing' | 'vibratoOnDemand' | 'chord' | 'timbre' | 'intervals' | 'messa' | 'phrase';
+  | 'voicing' | 'vibratoOnDemand' | 'chord' | 'timbre' | 'intervals' | 'messa' | 'phrase' | 'longTone' | 'air' | 'warmup';
 
-/** Fala sinusoidalna z krzywych Béziera: okres 24 px, amplituda ≈ amp. */
+/** Fala sinusoidalna z krzywych Béziera */
 function sinePath(y: number, amp: number, fromX: number, periods: number): string {
   const p = 24;
   let d = `M${fromX} ${y} Q${fromX + p / 4} ${y - amp * 2} ${fromX + p / 2} ${y}`;
@@ -163,12 +163,43 @@ export function ExerciseIcon({ name, className }: { name: ExerciseIconName; clas
         </>
       );
       break;
-    case 'phrase':
-    default:
+    case 'warmup':
       body = (
         <>
-          <path d="M6 44 C 18 14 46 14 58 44" stroke={grad} strokeOpacity=".25" {...STROKE} strokeWidth={1.6} />
-          <path className="ex-phrase" pathLength={1} d="M6 44 C 18 14 46 14 58 44" stroke={warm} {...STROKE} />
+          <path d="M8 48 L32 14 L56 48" stroke={grad} strokeOpacity=".25" {...STROKE} strokeWidth={1.6} strokeDasharray="1 5" />
+          {[[9, 48], [17, 37], [25, 25], [32, 15], [39, 25], [47, 37], [55, 48]].map(([x, y], i) => (
+            <circle key={i} className="ex-step-dot" style={{ animationDelay: `${i * 0.28}s` }} cx={x} cy={y} r="3.6" fill={i === 3 ? warm : grad} />
+          ))}
+        </>
+      );
+      break;
+    case 'longTone':
+      body = (
+        <>
+          <circle className="ex-long-breath" cx="10" cy="32" r="5" fill={warm} />
+          <path d="M18 32 H56" stroke={grad} strokeOpacity=".25" {...STROKE} />
+          <path className="ex-long" pathLength={1} d="M18 32 H56" stroke={grad} {...STROKE} />
+        </>
+      );
+      break;
+    case 'air':
+      body = (
+        <>
+          {[20, 32, 44].map((y, i) => (
+            <path key={y} className="ex-air" style={{ animationDelay: `${i * 0.45}s` }} d={`M10 ${y} q 8 -5 16 0 t 16 0`} stroke={i === 1 ? warm : grad} {...STROKE} strokeWidth={2.2} />
+          ))}
+        </>
+      );
+      break;
+    case 'phrase':
+    default:
+      // jedna wysokość, zmieniające się sylaby
+      body = (
+        <>
+          <path d="M6 32 H58" stroke={grad} strokeOpacity=".25" {...STROKE} strokeWidth={1.6} />
+          {[8, 20, 32, 44, 56].map((x, i) => (
+            <rect key={x} className="ex-step-dot" style={{ animationDelay: `${i * 0.3}s` }} x={x - 4.5} y="28" width="9" height="8" rx="4" fill={i % 2 ? warm : grad} />
+          ))}
         </>
       );
   }

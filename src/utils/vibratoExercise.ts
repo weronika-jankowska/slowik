@@ -1,15 +1,13 @@
-// Czysta logika ćwiczenia „Minimalizacja wibrato” (bez Reacta – da się testować w Node).
 import { analyzeVibratoFull, type VibratoAnalysisResult } from './audioMetrics';
 import { formatDecimalPl } from './noteUtils';
 
-/** Dla chórzystów: idealne wibrato ≈ 0,1 półtonu (w obie strony od dźwięku wzorcowego). */
+/** Dla chórzystów */
 export const VIBRATO_BAND_SEMITONES = 0.1;
 export const VIBRATO_BAND_CENTS = VIBRATO_BAND_SEMITONES * 100;
 
 export interface AttemptData {
   /** Czas od początku śpiewania [s]. */
   t: number[];
-  /** Odchylenie od dźwięku wzorcowego w centach (zwinięte do oktawy); NaN = brak dźwięku. */
   cents: number[];
   /** F0 w Hz; 0 = brak dźwięku. */
   hz: number[];
@@ -21,14 +19,14 @@ export interface AttemptStats {
   voicedSeconds: number;
   inBandFraction: number;
   medianOffsetCents: number;
-  /** Amplituda wahań wysokości (±), jak „extent” wibrato: √2 · RMS po odjęciu wolnego trendu (średnia ruchoma 1 s). */
+  /** Amplituda wahań wysokości (±), jak „extent” wibrato */
   wobbleAmplitudeCents: number;
   vibrato: VibratoAnalysisResult;
 }
 
 const GRID_DT = 0.016;
 const MAX_GAP_SEC = 0.08;
-const TREND_WINDOW_SEC = 1.0; // pełny okres wolnego trendu; przy wibrato 4,5–7 Hz wyciek ≤ 7%
+const TREND_WINDOW_SEC = 1.0; // pełny okres wolnego trendu
 
 function median(values: number[]): number {
   if (values.length === 0) return NaN;
@@ -37,7 +35,7 @@ function median(values: number[]): number {
   return v.length % 2 ? (v[mid] ?? NaN) : (((v[mid - 1] ?? 0) + (v[mid] ?? 0)) / 2);
 }
 
-/** Amplituda wahań: odcinki ciągłego dźwięku → siatka 16 ms → odjęcie średniej ruchomej 1 s → √2·RMS. */
+/** Amplituda wahań */
 export function wobbleAmplitudeCents(t: number[], cents: number[]): number {
   const segments: { ts: number[]; vs: number[] }[] = [];
   let cur: { ts: number[]; vs: number[] } | null = null;

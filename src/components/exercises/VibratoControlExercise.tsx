@@ -10,6 +10,7 @@ import {
   playReferenceNote,
   type ReferencePlayback
 } from '../../utils/noteUtils';
+import { BTN_PRIMARY } from './exerciseUi';
 import {
   VIBRATO_BAND_CENTS,
   VIBRATO_BAND_SEMITONES,
@@ -30,10 +31,8 @@ const STORAGE_KEY = 'vocal_analysis_history';
 
 const BTN =
   'bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-5 sm:px-6 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed';
-const BTN_PRIMARY =
-  'bg-white/75 hover:bg-white/90 text-[#18388f] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-6 sm:px-8 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/50 cursor-pointer';
 
-/** Domyślny dźwięk: środek zakresu z ostatniej analizy głosu (MPFR), a bez niej A3. */
+/** Domyślny dźwięk */
 function defaultTargetMidi(): number {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -146,7 +145,6 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
     setLive(null);
     setResult(null);
 
-    // dźwięk wzorcowy i od razu odliczanie 3, 2, 1 (mikrofon jeszcze niczego nie rejestruje)
     const playback = playReferenceNote(targetMidi);
     playbackRef.current = playback;
     for (let n = 3; n >= 1; n--) {
@@ -155,7 +153,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
       await sleep(1000);
       if (stale()) return;
     }
-    await playback.done; // dźwięk wzorcowy musi całkiem wybrzmieć, zanim zacznie się rejestracja
+    await playback.done;
     if (stale()) return;
 
     // 3. rejestracja głosu
@@ -240,7 +238,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
   return (
     <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white select-none">
       <div className={`max-w-5xl mx-auto min-h-full px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5 relative`}>
-        <div className="w-full flex justify-start">
+        <div className="w-full flex justify-end">
           <button
             type="button"
             onClick={() => { cancelRun(); onBack(); }}
@@ -255,11 +253,12 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
           <h1 className="font-seasons font-normal text-3xl sm:text-4xl md:text-[40px] tracking-[0.05em] uppercase drop-shadow-sm leading-tight">
             Minimalizacja wibrato
           </h1>
+          <span className="text-sm text-white/70 block mt-1">prosty ton bez wibrato</span>
         </div>
 
         {/* Wykres f0 (przed startem widoczna jest tylko instrukcja) */}
         {phase !== 'setup' && (
-        <div className="w-full bg-black/35 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-3 sm:p-4 flex flex-col gap-3">
+        <div className="w-full bg-[#18388f]/55 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-3 sm:p-4 flex flex-col gap-3">
           <div className="relative w-full h-[280px] sm:h-[340px]">
             <PitchPlot
               dataRef={dataRef}
@@ -329,16 +328,16 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
 
         {/* Ustawienia przed startem */}
         {phase === 'setup' && (
-          <div className="w-full sm:fixed sm:inset-0 sm:flex sm:items-center sm:justify-center sm:px-8 sm:pointer-events-none">
+          <div className="w-full flex-1 flex items-center justify-center">
           <div className="w-full max-w-3xl sm:pointer-events-auto bg-white/40 backdrop-blur-md rounded-2xl border border-white/35 shadow-md p-5 sm:p-6 text-[#18388f] flex flex-col gap-5">
-            <ol className="font-cardo text-[14px] sm:text-[15px] text-[#2c49a8] leading-snug list-decimal pl-5 flex flex-col gap-1.5">
-              <li>Usłyszysz dźwięk wzorcowy. Posłuchaj go uważnie.</li>
-              <li>Po odliczaniu zaśpiewaj ten dźwięk na samogłosce [A] i trzymaj go przez {SING_SECONDS} sekund, bez wibrato.</li>
-              <li>Staraj się, by linia na wykresie mieściła się w zielonym polu (±{bandSemisLabel} półtonu od dźwięku wzorcowego).</li>
-              <li className="list-none -ml-5 pl-5 text-[13px] text-[#466cd2] opacity-90">
+            <div className="font-cardo text-[14px] sm:text-[15px] text-[#2c49a8] leading-snug flex flex-col gap-1.5">
+              <p>Usłyszysz dźwięk wzorcowy. Posłuchaj go uważnie.</p>
+              <p>Po odliczaniu zaśpiewaj ten dźwięk na samogłosce <i>a</i> i trzymaj go przez {SING_SECONDS} sekund, bez wibrato.</p>
+              <p>Staraj się, by linia na wykresie mieściła się w zielonym polu (±{bandSemisLabel} półtonu od dźwięku wzorcowego).</p>
+              <p className="text-[13px] text-[#466cd2] opacity-90">
                 Jeśli dźwięk jest dla Ciebie za wysoki lub za niski, śpiewaj oktawę niżej lub wyżej, aplikacja to uwzględni.
-              </li>
-            </ol>
+              </p>
+            </div>
 
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-3">
@@ -352,7 +351,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
               </div>
               <div className="flex flex-wrap items-center justify-center gap-3">
                 <button type="button" onClick={() => void preview()} disabled={previewPlaying} className={BTN}>♪ Posłuchaj dźwięku</button>
-                <button type="button" onClick={() => void begin()} className={BTN_PRIMARY}>Rozpocznij ćwiczenie</button>
+                <button type="button" onClick={() => void begin()} className={BTN_PRIMARY}>Rozpocznij</button>
               </div>
             </div>
           </div>
@@ -370,7 +369,7 @@ export default function VibratoControlExercise({ onBack }: { onBack: () => void 
             </div>
 
             {result.feedback.tone !== 'insufficient' && (
-              <div className="w-full grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-3.5">
+              <div className="w-full result-tiles">
                 {metricTiles.map((item) => (
                   <div key={item.id} className="bg-white/40 backdrop-blur-md rounded-xl py-3 px-3 flex flex-col items-center justify-between text-center shadow-md border border-white/35 min-h-[114px] sm:min-h-[120px]">
                     <h3 className="font-seasons font-normal text-[14px] sm:text-[15px] text-[#18388f] leading-tight">{item.label}</h3>

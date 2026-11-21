@@ -1,4 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
+import ParameterInfo from './ParameterInfo';
+import { audioDebug, referenceSampleFolder } from '../utils/pianoSampler';
+import { foldCentsToOctave } from '../utils/noteUtils';
+import { RAW_MIC_CONSTRAINTS, ensureRawMic } from '../utils/micSetup';
+import { PIANO_FRAME_STYLE } from './pianoFrame';
+import { navPush, navState, useNavListener } from '../utils/navHistory';
+import { measureBreathFrame, summarizeBreath, BREATH_LEVEL_TEXT, BREATH_MODEL_VERSION, type BreathFrame } from '../utils/breathiness';
 import {
   calculateRMS,
   pitchYIN,
@@ -48,7 +55,16 @@ const STORAGE_KEY = 'vocal_analysis_history';
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const MIDI_C4 = 60;
 
-// Nazwy nut z bemolami dla czarnych klawiszy (zgodnie z nazewnictwem plików mp3)
+/** Ramki z najwyższym/najniższym dźwiękiem. */
+const RESULT_FRAME_STYLE = {
+  // ten sam efekt co przycisk „Powtórz górę”
+  backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  border: '1px solid rgba(255, 255, 255, 0.2)',
+  borderRadius: 12
+};
+/** Granatowy napis nad nazwą dźwięku. */
+const RESULT_LABEL_COLOR = '#18388f';
+
 const NOTE_NAMES_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 
 // Białe klawisze (gama C-dur) od C2 (36) do C6 (84)
@@ -59,6 +75,14 @@ const C_MAJOR_SCALE_MIDIS: number[] = [
   72, 74, 76, 77, 79, 81, 83, // Oktawa 5 (C5 - B5)
   84                          // C6
 ];
+
+const dominantOctave = (octaves: number[]): number => {
+  const count = new Map<number, number>();
+  for (const o of octaves) count.set(o, (count.get(o) ?? 0) + 1);
+  let best = 0, bestN = -1;
+  for (const [o, n] of count) if (n > bestN) { best = o; bestN = n; }
+  return best;
+};
 
 const getNextCMajorMidi = (currentMidi: number): number | null => {
   const next = C_MAJOR_SCALE_MIDIS.find((m) => m > currentMidi);
@@ -77,7 +101,6 @@ const midiToNoteName = (midi: number): string => {
   return `${name}${octave}`;
 };
 
-// Generowanie nazwy pliku MP3 dla zadanego MIDI (czarne klawisze z bemolami, np. Ab4.mp3)
 const midiToSampleFilename = (midi: number): string => {
   const noteIndex = ((midi % 12) + 12) % 12;
   const octave = Math.floor(midi / 12) - 1;
@@ -85,7 +108,6 @@ const midiToSampleFilename = (midi: number): string => {
   return `${name}${octave}.mp3`;
 };
 
-// Pobieranie częstotliwości skorelowanej z plikiem MP3 lub fallback teoretyczny
 const getCalibratedMidiFreq = (midi: number): number => {
   const calibrated = CALIBRATED_FREQUENCIES[midi.toString()];
   if (calibrated !== undefined && Number.isFinite(calibrated)) {
@@ -244,12 +266,13 @@ function evaluateFeedbackMetrics(
   let vibsComment = '';
   if (!hasVibrato) {
     vibsComment = 'W Twoim śpiewie nie słychać wibrato, dźwięk jest „prosty”';
-  } else if (vibs < 0.93) {
+  } else if (vibs < 0.5) {
+    // progi tymczasowe
     vibsComment = 'Twoje wibrato jest jeszcze mało regularne, falowanie bywa nierówne';
-  } else if (vibs <= 0.95) {
-    vibsComment = 'Twoje wibrato jest regularne i swobodne, zbliżone do śpiewu rozrywkowego';
+  } else if (vibs < 0.8) {
+    vibsComment = 'Twoje wibrato jest regularne i swobodne';
   } else {
-    vibsComment = 'Twoje wibrato jest bardzo regularne i równe, zbliżone do wibrato śpiewaków chóralnych';
+    vibsComment = 'Twoje wibrato jest bardzo regularne i równe';
   }
   items.push({
     id: 'sinusoidality',
@@ -328,22 +351,28 @@ function evaluateFeedbackMetrics(
     valueColor: '#6cb114'
   });
 
-  const hnr = metrics?.hnrDb ?? NaN;
-  let hnrComment = '';
-  if (!Number.isFinite(hnr)) {
-    hnrComment = 'Brak odczytu';
-  } else if (hnr > 24) {
-    hnrComment = 'Twój ton jest bardzo dźwięczny, w głosie nie słychać "powietrza"';
-  } else if (hnr >= 20) {
-    hnrComment = 'Twój głos jest odpowiednio dźwięczny';
+  // Powietrze w głosie
+  const outdated = metrics !== null && metrics !== undefined && metrics.breathModel !== BREATH_MODEL_VERSION;
+  const level = outdated ? null : metrics?.breathLevel;
+  let breathComment = '';
+  if (metrics && metrics.breathIndex === undefined) {
+    breathComment = 'Ta analiza została zapisana przed wprowadzeniem oceny powietrza w głosie';
+  } else if (outdated) {
+    breathComment = 'Ta analiza została zapisana przed wprowadzeniem obecnej oceny powietrza w głosie';
+  } else if (!level) {
+    breathComment = 'Brak odczytu';
+  } else if (level === 'none') {
+    breathComment = 'Twój ton jest bardzo dźwięczny, w głosie nie słychać „powietrza”';
+  } else if (level === 'moderate') {
+    breathComment = 'Twój głos jest odpowiednio dźwięczny';
   } else {
-    hnrComment = 'W Twoim głosie słychać “powietrze”. Postaraj się domknąć struny głosowe.';
+    breathComment = 'W Twoim głosie słychać „powietrze”. Postaraj się domknąć struny głosowe.';
   }
   items.push({
-    id: 'hnr',
-    label: 'HNR',
-    displayValue: Number.isFinite(hnr) ? `${hnr.toFixed(1)} dB` : '—',
-    comment: hnrComment,
+    id: 'breath',
+    label: 'powietrze w głosie',
+    displayValue: level ? BREATH_LEVEL_TEXT[level] : '—',
+    comment: breathComment,
     valueColor: '#f2b040'
   });
 
@@ -372,6 +401,26 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
   // Archiwum badań
   const [historyRecords, setHistoryRecords] = useState<SavedAnalysisRecord[]>([]);
+  const [openParam, setOpenParam] = useState<string | null>(null);
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
+
+  // „wstecz” / „dalej” w przeglądarce
+  useNavListener((st) => {
+    setOpenParam(st.param ?? null);
+    if (initialMode === 'test') {
+      if (st.archive && stageRef.current === 'METRICS_REVIEW') setStage('HISTORY_REVIEW');
+      if (!st.archive && stageRef.current === 'HISTORY_REVIEW') setStage('METRICS_REVIEW');
+    }
+  });
+  const openParamInfo = (id: string) => {
+    navPush({ param: id }, ['view', 'archive']);
+    setOpenParam(id);
+  };
+  const closeParamInfo = () => {
+    if (navState().param) window.history.back();
+    else setOpenParam(null);
+  };
   const [currentHistoryIndex, setCurrentHistoryIndex] = useState<number>(0);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -390,6 +439,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
   const historyShimmerRef = useRef<number[]>([]);
   const historyHnrRef = useRef<number[]>([]);
   const historyCppRef = useRef<number[]>([]);
+  const breathFramesRef = useRef<BreathFrame[]>([]);
   const historyNoiseRef = useRef<number[]>([]);
   const historySfEnergyRef = useRef<number[]>([]);
   const historySprRef = useRef<number[]>([]);
@@ -401,6 +451,10 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
   const sustainedAErrorsRef = useRef<number[]>([]);
 
   const REQUIRED_STABLE_FRAMES = 38;
+  /** Próg głośności przy badaniu skali */
+  const SCALE_MIN_RMS = 0.002;
+  const SCALE_PASS_CENTS = 100;
+  const scaleStartSungRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -427,9 +481,8 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
   const initAudio = async () => {
     try {
       if (audioCtxRef.current) return;
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-      });
+      const stream = await navigator.mediaDevices.getUserMedia(RAW_MIC_CONSTRAINTS);
+      await ensureRawMic(stream);
       micStreamRef.current = stream;
 
       const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -471,10 +524,13 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
         currentAudioSampleRef.current.currentTime = 0;
       }
       const filename = midiToSampleFilename(midi);
-      const audio = new Audio(`/piano-mp3/${filename}`);
+      // przy włączonym mikrofonie Safari ścisza odtwarzanie
+      const micOn = micStreamRef.current?.getAudioTracks().some(t => t.readyState === 'live') ?? false;
+      const url = `${referenceSampleFolder(micOn)}/${filename}`;
+      const audio = new Audio(url);
       audio.volume = 0.85;
       currentAudioSampleRef.current = audio;
-      audio.play().catch(e => console.warn(`Nie można odtworzyć próbki /piano-mp3/${filename}:`, e));
+      audio.play().catch(e => console.warn(`Nie można odtworzyć próbki ${url}:`, e));
     } catch (e) {
       console.error("Błąd podczas odtwarzania próbki pianina:", e);
     }
@@ -503,7 +559,8 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     setDownGreenNotes(new Set());
     setRedNote(null);
     scalePitchErrorsRef.current = [];
-    startScaleStep(MIDI_C4, 'UP');
+    scaleStartSungRef.current = null;
+    beginScale(MIDI_C4, 'UP');
   };
 
   const startScaleDownFlow = () => {
@@ -511,9 +568,65 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     setLowestMidi(null);
     setDownGreenNotes(new Set());
     setRedNote(null);
-    const prevMidi = getPrevCMajorMidi(MIDI_C4) ?? 59;
-    startScaleStep(prevMidi, 'DOWN');
+    const prevMidi = getPrevCMajorMidi(scaleStartSungRef.current ?? MIDI_C4) ?? 59;
+    beginScale(prevMidi, 'DOWN');
   };
+
+  // Badanie skali na telefonie
+  const isPhone = () => window.matchMedia('(pointer: coarse)').matches && Math.min(window.screen.width, window.screen.height) < 600;
+  const isPortrait = () => window.matchMedia('(orientation: portrait)').matches;
+  const enteredFullscreenRef = useRef(false);
+  const [rotateWait, setRotateWait] = useState<{ midi: number; mode: 'UP' | 'DOWN' } | null>(null);
+
+  const tryLandscape = async () => {
+    if (!isPhone()) return;
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+        enteredFullscreenRef.current = true;
+      }
+      const orientation = window.screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+      await orientation.lock?.('landscape');
+    } catch {/* przeglądarka nie pozwala (np. iPhone) */}
+  };
+
+  const releaseLandscape = () => {
+    try { (window.screen.orientation as ScreenOrientation & { unlock?: () => void }).unlock?.(); } catch { /* brak blokady */ }
+    if (enteredFullscreenRef.current && document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    enteredFullscreenRef.current = false;
+  };
+
+  const beginScale = (midi: number, mode: 'UP' | 'DOWN') => {
+    void tryLandscape().then(() => {
+      if (isPhone() && isPortrait()) {
+        setCurrentMidi(midi);
+        setRotateWait({ midi, mode });
+      } else startScaleStep(midi, mode);
+    });
+  };
+
+  // obrócenie telefonu do poziomu uruchamia badanie
+  useEffect(() => {
+    if (!rotateWait) return;
+    const mq = window.matchMedia('(orientation: landscape)');
+    const onChange = () => {
+      if (!mq.matches) return;
+      const w = rotateWait;
+      setRotateWait(null);
+      startScaleStep(w.midi, w.mode);
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [rotateWait]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // po zakończeniu badania skali – powrót do zwykłej orientacji
+  useEffect(() => {
+    if (stage !== 'SCALE_UP_TEST' && stage !== 'SCALE_DOWN_TEST') {
+      setRotateWait(null);
+      releaseLandscape();
+    }
+  }, [stage]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => releaseLandscape(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startScaleStep = (midi: number, mode: 'UP' | 'DOWN') => {
     setCurrentMidi(midi);
@@ -543,7 +656,9 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     const buffer = new Float32Array(analyser.fftSize);
     const targetF = getCalibratedMidiFreq(midiVal);
     let attempts = 0;
+    let quietFrames = 0;
     const stepErrors: number[] = [];
+    const stepOctaves: number[] = [];
 
     const loop = () => {
       if (!analyserRef.current || !audioCtxRef.current) return;
@@ -551,24 +666,27 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
       analyser.getFloatTimeDomainData(buffer);
       const rms = calculateRMS(buffer);
 
-      if (rms > 0.018) {
-        let f0 = pitchYIN(buffer, ctx.sampleRate, 0.15);
+      // Niskie dźwięki bywają cichsze
+      if (rms > SCALE_MIN_RMS) {
+        quietFrames = 0;
+        const f0 = pitchYIN(buffer, ctx.sampleRate, 0.15);
 
         if (f0 >= 50 && f0 <= 1100) {
-          if (Math.abs(f0 * 2 - targetF) < targetF * 0.08) f0 = f0 * 2;
-          else if (Math.abs(f0 / 2 - targetF) < targetF * 0.08) f0 = f0 / 2;
+          const rawCents = 1200 * Math.log2(f0 / targetF);
+          const firstNote = mode === 'UP' && scaleStartSungRef.current === null;
+          const octave = firstNote ? Math.round(rawCents / 1200) : 0;
+          const cents = rawCents - 1200 * octave;
 
           setCurrentF0(f0);
-
-          const cents = 1200 * (Math.log(f0 / targetF) / Math.log(2));
           stepErrors.push(Math.abs(cents));
 
-          if (Math.abs(cents) <= 45) {
+          if (Math.abs(cents) <= SCALE_PASS_CENTS) {
             stableHoldRef.current += 1;
+            stepOctaves.push(octave);
             if (stableHoldRef.current >= REQUIRED_STABLE_FRAMES) {
               const stableErrorsSlice = stepErrors.slice(-REQUIRED_STABLE_FRAMES);
               scalePitchErrorsRef.current.push(...stableErrorsSlice);
-              handleScaleSuccess(midiVal, mode);
+              handleScaleSuccess(midiVal + 12 * dominantOctave(stepOctaves.slice(-REQUIRED_STABLE_FRAMES)), mode);
               return;
             }
           } else {
@@ -576,7 +694,12 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
           }
         }
       } else {
-        stableHoldRef.current = Math.max(0, stableHoldRef.current - 1);
+        quietFrames++;
+        // dłuższa cisza
+        if (quietFrames === 12) setCurrentF0(0);
+      }
+      if (import.meta.env.DEV && attempts % 20 === 0) {
+        audioDebug('scale', { midi: midiVal, mode, rms: Number(rms.toFixed(4)), rawF0: Number(pitchYIN(buffer, ctx.sampleRate, 0.15).toFixed(1)), target: Number(targetF.toFixed(1)), hold: stableHoldRef.current });
       }
 
       attempts++;
@@ -590,9 +713,11 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     loop();
   };
 
+  /** Zaliczony dźwięk badania skali */
   const handleScaleSuccess = (passedMidi: number, mode: 'UP' | 'DOWN') => {
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     setIsListening(false);
+    if (mode === 'UP' && scaleStartSungRef.current === null) scaleStartSungRef.current = passedMidi;
 
     const note = midiToNoteName(passedMidi);
 
@@ -662,6 +787,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     historyShimmerRef.current = [];
     historyHnrRef.current = [];
     historyCppRef.current = [];
+    breathFramesRef.current = [];
     historyNoiseRef.current = [];
     historySfEnergyRef.current = [];
     historySprRef.current = [];
@@ -707,7 +833,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
           setAProgress(Math.min(100, Math.round((framesCollected / TOTAL_FRAMES) * 100)));
 
           const targetF = targetNoteFreqRef.current;
-          const centsError = Math.abs(1200 * (Math.log(f0 / targetF) / Math.log(2)));
+          const centsError = Math.abs(foldCentsToOctave(1200 * Math.log2(f0 / targetF)));
           sustainedAErrorsRef.current.push(centsError);
 
           if (frameCounter % 4 === 0) {
@@ -719,6 +845,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
             cachedShimmer = pert.shimmerDb;
             cachedHnr = calculateHNR(buffer, ctx.sampleRate, f0);
             cachedCpp = calculateCPP(buffer, ctx.sampleRate).cppDb;
+            breathFramesRef.current.push(measureBreathFrame(buffer, ctx.sampleRate, f0, performance.now() / 1000));
 
             if (Number.isFinite(cachedJitter)) historyJitterRef.current.push(cachedJitter);
             if (Number.isFinite(cachedShimmer)) historyShimmerRef.current.push(cachedShimmer);
@@ -746,6 +873,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
             setScaleMaeCents(overallAverageMae);
 
             const finalVib = analyzeVibratoFull(pitchBufferRef.current, 0.016, pitchTimesRef.current);
+            const breath = summarizeBreath(breathFramesRef.current);
 
             const evaluationMetrics: AcousticMetricsState = {
               f0: Math.round(f0 * 10) / 10,
@@ -762,7 +890,12 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
               singerFormantEnergyDb: Math.round(medianOfValid(historySfEnergyRef.current) * 10) / 10,
               spr: Math.round(medianOfValid(historySprRef.current) * 10) / 10,
               sppFreqHz: Math.round(medianOfValid(historySppFreqRef.current)),
-              vibrato: finalVib
+              vibrato: finalVib,
+              breathCppsDb: Math.round(breath.cppsDb * 10) / 10,
+              breathHnrDb: Math.round(breath.hnrDb * 10) / 10,
+              breathIndex: Math.round(breath.index * 100) / 100,
+              breathLevel: breath.level,
+              breathModel: BREATH_MODEL_VERSION
             };
 
             setFinalMetrics(evaluationMetrics);
@@ -858,18 +991,36 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
   };
 
   return (
-    <div className={`w-full ${stage === 'METRICS_REVIEW' || stage === 'HISTORY_REVIEW' ? 'h-screen overflow-hidden' : 'min-h-screen py-6'} flex flex-col items-center justify-between px-4 relative z-10 font-cardo text-white`}>
+    <div className={`w-full ${stage === 'METRICS_REVIEW' || stage === 'HISTORY_REVIEW' ? 'h-screen overflow-y-auto overflow-x-hidden' : 'min-h-screen py-6 [@media(max-height:500px)]:py-2'} flex flex-col items-center justify-between px-4 relative z-10 font-cardo text-white`}>
       
       {(stage === 'SCALE_UP_TEST' || stage === 'SCALE_DOWN_TEST') && (
-        <div className="w-full max-w-6xl my-auto flex flex-col items-center gap-4">
+        <div className="w-full max-w-6xl my-auto flex flex-col items-center gap-4 [@media(max-height:500px)]:gap-2">
+          {rotateWait && (
+            <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-5 px-8 text-center bg-[#18388f]/90 backdrop-blur-md">
+              <svg width="72" height="72" viewBox="0 0 72 72" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="24" y="10" width="24" height="42" rx="4" opacity="0.5" />
+                <rect x="15" y="34" width="42" height="24" rx="4" />
+                <path d="M52 16c6 3 9 8 9 14" /><path d="M57 27l4 3 3-4" />
+              </svg>
+              <h2 className="font-seasons text-2xl tracking-wider">Obróć telefon poziomo</h2>
+              <p className="font-cardo text-[15px] text-white/80 leading-snug max-w-xs">W poziomie klawiatura jest większa i łatwiej odczytać nazwy dźwięków. Badanie rozpocznie się po obróceniu ekranu.</p>
+              <button
+                type="button"
+                onClick={() => { const w = rotateWait; setRotateWait(null); startScaleStep(w.midi, w.mode); }}
+                className="text-xs uppercase tracking-wider text-white/80 hover:text-white bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-1.5 rounded-full cursor-pointer"
+              >
+                Kontynuuj w pionie
+              </button>
+            </div>
+          )}
           <div className="text-center relative w-full flex flex-col items-center">
-            <span className="text-xs uppercase tracking-widest text-white/60 block mb-1">
+            <span className="text-xs uppercase tracking-widest text-white/60 block mb-1 [@media(max-height:500px)]:hidden">
               Etap 1: Badanie Skali ({stage === 'SCALE_UP_TEST' ? 'W Górę' : 'W Dół'})
             </span>
-            <h2 className="font-seasons text-2xl md:text-4xl tracking-wider">
+            <h2 className="font-seasons text-2xl md:text-4xl tracking-wider [@media(max-height:500px)]:text-xl">
               ŚPIEWAJ KOLEJNE DŹWIĘKI
             </h2>
-            <p className="text-xs opacity-70 mt-1">
+            <p className="text-xs opacity-70 mt-1 [@media(max-height:500px)]:hidden">
               Powtórz usłyszany dźwięk i utrzymaj go przez chwilę
             </p>
 
@@ -883,7 +1034,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
           </div>
 
           <div className="w-full max-w-4xl relative flex justify-center py-2 select-none">
-            <div className="flex relative w-full bg-black/60 backdrop-blur-md p-3 rounded-2xl border border-white/20 shadow-2xl h-40 sm:h-48 overflow-hidden">
+            <div className="flex relative w-full h-40 sm:h-48 [@media(max-height:500px)]:h-28 overflow-hidden" style={PIANO_FRAME_STYLE}>
               {keyboardKeys
                 .filter(k => !k.isBlack)
                 .map(whiteKey => {
@@ -910,7 +1061,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
                         onClick={() => handleKeyClick(whiteKey.midi)}
                         className={`w-full h-full rounded-b-lg border-r border-zinc-300 flex flex-col justify-end pb-2 items-center transition-colors focus:outline-none ${whiteBg}`}
                       >
-                        <span className="text-[9px] font-bold opacity-75 pointer-events-none">{whiteKey.note}</span>
+                        <span className={`text-[9px] font-bold opacity-75 pointer-events-none ${whiteKey.note.startsWith('C') || isTarget ? '' : 'hidden sm:inline'}`}>{whiteKey.note}</span>
                       </button>
 
                       {blackKey && (
@@ -930,7 +1081,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
                               : 'bg-zinc-900 text-white hover:bg-zinc-800'
                           }`}
                         >
-                          <span className="text-[7px] font-bold opacity-80 pointer-events-none">
+                          <span className={`text-[7px] font-bold opacity-80 pointer-events-none ${isBlackTarget ? '' : 'hidden sm:inline'}`}>
                             {blackKey.note.replace('#', '♯')}
                           </span>
                         </button>
@@ -947,13 +1098,16 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
             const hasVoice = currentF0 > 0;
             
             const centsDiff = hasVoice 
-              ? Math.max(-50, Math.min(50, 1200 * Math.log2(currentF0 / targetFreq)))
+              ? Math.max(-SCALE_PASS_CENTS, Math.min(SCALE_PASS_CENTS, scaleStartSungRef.current === null
+                  ? foldCentsToOctave(1200 * Math.log2(currentF0 / targetFreq))
+                  : 1200 * Math.log2(currentF0 / targetFreq)))
               : 0;
             
-            const needlePositionPct = ((centsDiff + 50) / 100) * 100;
+            // skala ±100 centów – tyle wynosi próg zaliczenia dźwięku
+            const needlePositionPct = ((centsDiff + SCALE_PASS_CENTS) / (2 * SCALE_PASS_CENTS)) * 100;
             
             const isInTune = hasVoice && Math.abs(centsDiff) <= 15;
-            const isAcceptable = hasVoice && Math.abs(centsDiff) <= 45;
+            const isAcceptable = hasVoice && Math.abs(centsDiff) < SCALE_PASS_CENTS;
 
             const needleColor = !hasVoice
               ? 'bg-white/40'
@@ -964,7 +1118,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
               : 'bg-rose-500';
 
             return (
-              <div className="w-full max-w-xl bg-black/60 backdrop-blur-md p-5 rounded-2xl border border-white/20 shadow-2xl flex flex-col items-center select-none">
+              <div className="w-full max-w-xl bg-[#18388f]/65 backdrop-blur-md p-5 [@media(max-height:500px)]:py-2 rounded-2xl border border-white/20 shadow-2xl flex flex-col items-center select-none">
                 <div className="w-full flex items-center justify-between pb-3 border-b border-white/10 text-xs sm:text-sm">
                   <div className="flex flex-col items-start">
                     <span className="text-white/50 text-[10px] uppercase tracking-wider">Cel</span>
@@ -1000,13 +1154,13 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
                   </div>
                 </div>
 
-                <div className="w-full py-4 flex flex-col items-center">
+                <div className="w-full py-4 [@media(max-height:500px)]:py-1 flex flex-col items-center">
                   <div className="relative w-full h-8 flex items-center justify-center">
                     <div className="absolute inset-x-0 h-1.5 bg-white/10 rounded-full" />
 
                     <div 
                       className="absolute h-1.5 bg-emerald-500/20 rounded-full" 
-                      style={{ left: '5%', right: '5%' }} 
+                      style={{ left: '42.5%', right: '42.5%' }} 
                     />
 
                     <div className="absolute inset-x-0 flex justify-between px-1 pointer-events-none">
@@ -1023,7 +1177,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
                     {hasVoice && (
                       <div
-                        className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-[left] duration-75 flex flex-col items-center z-20 pointer-events-none"
+                        className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 flex flex-col items-center z-20 pointer-events-none"
                         style={{ left: `${needlePositionPct}%` }}
                       >
                         <div className={`w-3.5 h-7 rounded-sm shadow-lg border border-white/60 ${needleColor}`} />
@@ -1032,11 +1186,11 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
                   </div>
 
                   <div className="w-full flex justify-between text-[10px] text-white/40 font-mono px-0.5 mt-1">
+                    <span>-100 c</span>
                     <span>-50 c</span>
-                    <span>-25 c</span>
                     <span className="text-emerald-400 font-bold">CEL (0)</span>
-                    <span>+25 c</span>
                     <span>+50 c</span>
+                    <span>+100 c</span>
                   </div>
                 </div>
 
@@ -1067,9 +1221,9 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
           <span className="text-xs uppercase tracking-widest text-white/60 block">Krok 1: Skala w górę</span>
           <h2 className="font-seasons text-3xl md:text-4xl tracking-wider">SKALA W GÓRĘ</h2>
           
-          <div className="bg-[rgba(255,255,255,0.35)] backdrop-blur-md rounded-2xl py-6 px-10 w-full shadow-md text-[#18388f]">
-            <span className="text-xs uppercase font-bold tracking-wider block opacity-70 mb-1">Osiągnięty najwyższy dźwięk:</span>
-            <span className="font-seasons text-4xl font-bold block my-2">
+          <div className="py-6 px-10 w-full" style={RESULT_FRAME_STYLE}>
+            <span className="text-xs uppercase tracking-wider block mb-1" style={{ color: RESULT_LABEL_COLOR }}>Najwyższy osiągnięty dźwięk:</span>
+            <span className="font-seasons text-4xl block my-2" style={{ color: RESULT_LABEL_COLOR }}>
               {highestMidi ? midiToNoteName(highestMidi) : 'Brak zaliczenia'}
             </span>
           </div>
@@ -1083,7 +1237,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
             </button>
             <button
               onClick={startScaleDownFlow}
-              className="flex-1 font-cardo text-sm py-3 px-4 rounded-xl uppercase tracking-wider text-[#18388f] bg-[rgba(255,255,255,0.65)] hover:bg-[rgba(125,148,222,0.85)] hover:text-white transition-all border-none cursor-pointer shadow-md font-bold"
+              className="flex-1 font-cardo text-sm py-3 px-4 rounded-xl uppercase tracking-wider text-[#18388f] bg-[rgba(255,255,255,0.65)] hover:bg-[rgba(125,148,222,0.85)] hover:text-white transition-all border-none cursor-pointer shadow-md"
             >
               Badaj dół →
             </button>
@@ -1096,9 +1250,9 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
           <span className="text-xs uppercase tracking-widest text-white/60 block">Krok 2: Skala w dół</span>
           <h2 className="font-seasons text-3xl md:text-4xl tracking-wider">SKALA W DÓŁ</h2>
           
-          <div className="bg-[rgba(255,255,255,0.35)] backdrop-blur-md rounded-2xl py-6 px-10 w-full shadow-md text-[#18388f]">
-            <span className="text-xs uppercase font-bold tracking-wider block opacity-70 mb-1">Osiągnięty najniższy dźwięk:</span>
-            <span className="font-seasons text-4xl font-bold block my-2">
+          <div className="py-6 px-10 w-full" style={RESULT_FRAME_STYLE}>
+            <span className="text-xs uppercase tracking-wider block mb-1" style={{ color: RESULT_LABEL_COLOR }}>Najniższy osiągnięty dźwięk:</span>
+            <span className="font-seasons text-4xl block my-2" style={{ color: RESULT_LABEL_COLOR }}>
               {lowestMidi ? midiToNoteName(lowestMidi) : 'Brak zaliczenia'}
             </span>
           </div>
@@ -1112,7 +1266,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
             </button>
             <button
               onClick={() => initMultidisciplinaryTest(false)}
-              className="flex-1 font-cardo text-sm py-3 px-4 rounded-xl uppercase tracking-wider text-[#18388f] bg-[rgba(255,255,255,0.65)] hover:bg-[rgba(125,148,222,0.85)] hover:text-white transition-all border-none cursor-pointer shadow-md font-bold"
+              className="flex-1 font-cardo text-sm py-3 px-4 rounded-xl uppercase tracking-wider text-[#18388f] bg-[rgba(255,255,255,0.65)] hover:bg-[rgba(125,148,222,0.85)] hover:text-white transition-all border-none cursor-pointer shadow-md"
             >
               PRZEJDŹ DALEJ →
             </button>
@@ -1143,9 +1297,14 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
         </div>
       )}
 
+      {/* Opis parametru: zastępuje widok wyników do czasu zamknięcia */}
+      {openParam && (stage === 'METRICS_REVIEW' || stage === 'HISTORY_REVIEW') && (
+        <ParameterInfo id={openParam} onClose={closeParamInfo} />
+      )}
+
       {/* Widok 1: Podsumowanie bieżącej analizy */}
-      {stage === 'METRICS_REVIEW' && (
-        <div className="w-full h-full flex flex-col justify-center items-center px-4 sm:px-8 max-w-[1140px] mx-auto select-none overflow-hidden">
+      {stage === 'METRICS_REVIEW' && !openParam && (
+        <div className="w-full min-h-full shrink-0 flex flex-col justify-center items-center px-4 sm:px-8 pt-28 pb-8 md:py-8 max-w-[1140px] mx-auto select-none">
           
           <div className="w-full relative flex flex-col items-center mb-2">
             {currentAnalysisTimestamp && (
@@ -1182,6 +1341,10 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
             {evaluateFeedbackMetrics(finalMetrics, scaleMaeCents, mpfrResult).map((item) => (
               <div
                 key={item.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => openParamInfo(item.id)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openParamInfo(item.id); } }}
                 className="bg-white/40 hover:bg-white/50 backdrop-blur-md rounded-xl py-3 px-3 flex flex-col items-center justify-between text-center shadow-md border border-white/35 transition-all duration-200 cursor-pointer hover:scale-[1.01] min-h-[114px] sm:min-h-[120px]"
               >
                 <h3 className="font-seasons font-normal text-[14px] sm:text-[15px] text-[#18388f] leading-tight">
@@ -1223,6 +1386,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
                 if (historyRecords.length > 0) {
                   setCurrentHistoryIndex(historyRecords.length - 1);
                 }
+                navPush({ archive: true }, ['view']);
                 setStage('HISTORY_REVIEW');
               }}
               className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-4 sm:px-6 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
@@ -1242,8 +1406,8 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
       )}
 
       {/* Widok 2: Przeglądanie archiwum analiz */}
-      {stage === 'HISTORY_REVIEW' && (
-        <div className="w-full h-full flex flex-col justify-center items-center px-2 sm:px-6 max-w-[1240px] mx-auto select-none overflow-hidden">
+      {stage === 'HISTORY_REVIEW' && !openParam && (
+        <div className="w-full min-h-full shrink-0 flex flex-col justify-center items-center px-2 sm:px-6 pt-28 pb-8 md:py-8 max-w-[1240px] mx-auto select-none">
           
           <div className="w-full relative flex flex-col items-center mb-2">
             {activeArchiveRecord && (
@@ -1304,6 +1468,10 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
                 {evaluateFeedbackMetrics(activeArchiveRecord.metrics, activeArchiveRecord.scaleMaeCents, activeArchiveRecord.mpfr).map((item) => (
                   <div
                     key={item.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openParamInfo(item.id)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openParamInfo(item.id); } }}
                     className="bg-white/40 hover:bg-white/50 backdrop-blur-md rounded-xl py-3 px-3 flex flex-col items-center justify-between text-center shadow-md border border-white/35 transition-all duration-200 cursor-pointer hover:scale-[1.01] min-h-[114px] sm:min-h-[120px]"
                   >
                     <h3 className="font-seasons font-normal text-[14px] sm:text-[15px] text-[#18388f] leading-tight">
@@ -1324,9 +1492,9 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
                 ))}
               </div>
             ) : (
-              <div className="flex-1 max-w-md py-12 flex flex-col items-center justify-center bg-black/30 backdrop-blur-md rounded-2xl border border-white/20 text-center my-4">
-                <p className="text-sm opacity-80 mb-2">Nie masz zapisanych żadnych analiz.</p>
-                <span className="text-xs opacity-60">Wykonaj badanie, a wynik pojawi się w tym miejscu.</span>
+              <div className="flex-1 max-w-md py-12 px-6 flex flex-col items-center justify-center bg-white/40 backdrop-blur-md rounded-xl border border-white/35 shadow-md text-center my-4">
+                <p className="font-seasons text-[17px] text-[#18388f] mb-2">Nie masz zapisanych żadnych analiz.</p>
+                <span className="font-cardo text-sm text-[#466cd2]">Wykonaj badanie, a wynik pojawi się w tym miejscu.</span>
               </div>
             )}
 
@@ -1361,10 +1529,10 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
             </button>
             <button
               type="button"
-              onClick={onBack}
+              onClick={onGoToExercises ?? onBack}
               className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-7 sm:px-9 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
             >
-              POWRÓT DO MENU
+              PRZEJDŹ DO ĆWICZEŃ
             </button>
           </div>
 

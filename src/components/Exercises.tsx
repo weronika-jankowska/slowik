@@ -1,17 +1,29 @@
 import { useState } from 'react';
+import { navPush, navState, useNavListener } from '../utils/navHistory';
 import { ExerciseIcon, type ExerciseIconName } from './exercises/ExerciseIcons';
 import VibratoControlExercise from './exercises/VibratoControlExercise';
+import IntonationStabilityExercise from './exercises/IntonationStabilityExercise';
+import SingerFormantExercise from './exercises/SingerFormantExercise';
+import LipTrillExercise from './exercises/LipTrillExercise';
+import RangeExercise from './exercises/RangeExercise';
+import PrepareExercise from './exercises/PrepareExercise';
+import LongToneExercise from './exercises/LongToneExercise';
+import WarmupExercise from './exercises/WarmupExercise';
+import BreathinessExercise from './exercises/BreathinessExercise';
+import ChordExercise from './exercises/ChordExercise';
+import VibratoOnDemandExercise from './exercises/VibratoOnDemandExercise';
+import IntervalsExercise from './exercises/IntervalsExercise';
+import MessaDiVoceExercise from './exercises/MessaDiVoceExercise';
 
 type ExerciseId =
-  | 'prepare' | 'vibrato-control' | 'stability' | 'range' | 'formant' | 'trill'
-  | 'voicing' | 'chord' | 'timbre' | 'phrase' | 'vibrato-on-demand' | 'intervals' | 'messa';
+  | 'prepare' | 'warmup' | 'vibrato-control' | 'stability' | 'range' | 'formant' | 'trill'
+  | 'mpt' | 'air' | 'chord' | 'phrase' | 'vibrato-on-demand' | 'intervals' | 'messa';
 
 interface ExerciseTile {
   id: ExerciseId;
   title: string;
   description: string;
   icon: ExerciseIconName;
-  /** Tylko to ćwiczenie jest na razie zaimplementowane. */
   available?: boolean;
 }
 
@@ -23,29 +35,29 @@ interface ExerciseSection {
 const SECTIONS: ExerciseSection[] = [
   {
     tiles: [
-      { id: 'prepare', icon: 'breath', title: 'Przygotowanie do ćwiczeń', description: 'Przygotuj się do ćwiczeń poprzez rozluźnienie i pracę nad oddechem' },
-      { id: 'stability', icon: 'stability', title: 'Stabilność tonu', description: 'Ćwiczenie pozwala ćwiczyć kontrolę stabilności tonu w zakresie Twojej skali' },
-      { id: 'range', icon: 'range', title: 'Poszerzanie skali', description: 'Ćwicz dźwięki na granicy swojej skali, aby zwiększyć zakres swojego głosu' },
-      { id: 'formant', icon: 'formant', title: 'Formant śpiewaczy', description: 'Kontroluj dźwięczność swojego głosu, aby wybrzmiewać nad instrumentami' },
-      { id: 'trill', icon: 'trill', title: 'Tryl wargowy', description: 'Powtarzaj melodię wykonując tryl. To dobre ćwiczenie na rozgrzewkę' },
-      { id: 'voicing', icon: 'voicing', title: 'Dźwięczność głosu', description: 'Zacznij od „mmm” i płynnie przejdź na „aaa”, by poczuć lepsze podparcie dźwięku' }
+      { id: 'prepare', icon: 'breath', available: true, title: 'Przygotowanie do ćwiczeń', description: 'Przygotuj się do ćwiczeń poprzez rozluźnienie i pracę nad oddechem' },
+      { id: 'trill', icon: 'trill', available: true, title: 'Tryl wargowy', description: 'Powtarzaj melodię wykonując tryl. To dobre ćwiczenie na rozgrzewkę' },
+      { id: 'warmup', icon: 'warmup', available: true, title: 'Rozśpiewka', description: 'Rozgrzej swój głos śpiewając krótkie melodie w kolejnych tonacjach Twojej skali' },
+      { id: 'stability', icon: 'stability', available: true, title: 'Stabilność tonu', description: 'Ćwiczenie pozwala ćwiczyć kontrolę stabilności tonu w zakresie Twojej skali' },
+      { id: 'range', icon: 'range', available: true, title: 'Poszerzanie skali', description: 'Ziewnięcie, syrena i nowe dźwięki – krok po kroku zwiększaj zakres swojego głosu' },
+      { id: 'formant', icon: 'formant', available: true, title: 'Formant śpiewaczy', description: 'Kontroluj dźwięczność swojego głosu, aby wybrzmiewać nad instrumentami' },
+      { id: 'mpt', icon: 'longTone', available: true, title: 'Długi oddech', description: 'Jeden dźwięk albo liczenie wron na jednym oddechu – bij własne rekordy' },
+      { id: 'air', icon: 'air', available: true, title: 'Powietrze w głosie', description: 'Zmierz ilość powietrza w głosie, poćwicz z filmem i sprawdź efekt' }
     ]
   },
   {
     heading: 'Dla chórzystów',
     tiles: [
       { id: 'vibrato-control', icon: 'vibrato', available: true, title: 'Minimalizacja wibrato', description: 'Ćwicz utrzymywanie prostego dźwięku, aby ograniczyć wibrato w śpiewie chóralnym' },
-      { id: 'chord', icon: 'chord', title: 'Dźwięk na tle akordu', description: 'Utrzymaj swoją nutę na tle nagranego akordu i uzupełnij go własnym głosem' },
-      { id: 'timbre', icon: 'timbre', title: 'Dopasuj barwę', description: 'Dopasuj barwę swojego głosu do wzorca głosu Twojej sekcji' },
-      { id: 'phrase', icon: 'phrase', title: 'Długa fraza', description: 'Utrzymaj wysokość dźwięku przez całą, długą frazę' }
+      { id: 'chord', icon: 'chord', available: true, title: 'Harmonia', description: 'Śpiewaj w harmonii na tle akordu lub pojedynczego dźwięku' },
     ]
   },
   {
     heading: 'Dla śpiewaków rozrywkowych',
     tiles: [
-      { id: 'vibrato-on-demand', icon: 'vibratoOnDemand', title: 'Wibrato na żądanie', description: 'Śpiewaj na zmianę z wibrato i bez, by świadomie je włączać i wyłączać' },
-      { id: 'intervals', icon: 'intervals', title: 'Trudne interwały', description: 'Ćwicz precyzję intonacji na interwałach, które sprawiają najwięcej trudności' },
-      { id: 'messa', icon: 'messa', title: 'Messa di voce', description: 'Trenuj dużą dynamikę na jednej długiej nucie: od ciszy do forte i z powrotem' }
+      { id: 'vibrato-on-demand', icon: 'vibratoOnDemand', available: true, title: 'Wibrato na żądanie', description: 'Śpiewaj na zmianę z wibrato i bez, by świadomie je włączać i wyłączać' },
+      { id: 'intervals', icon: 'intervals', available: true, title: 'Trudne interwały', description: 'Ćwicz precyzję intonacji na interwałach, które sprawiają najwięcej trudności' },
+      { id: 'messa', icon: 'messa', available: true, title: 'Messa di voce', description: 'Trenuj dużą dynamikę na jednej długiej nucie: od ciszy do forte i z powrotem' }
     ]
   }
 ];
@@ -85,10 +97,33 @@ interface ExercisesProps {
 }
 
 export default function Exercises({ initialExercise = null }: ExercisesProps) {
-  const [active, setActive] = useState<ExerciseId | null>(initialExercise);
+  const [active, setActive] = useState<ExerciseId | null>(() => (navState().ex as ExerciseId | undefined) ?? initialExercise);
 
-  if (active === 'vibrato-control') {
-    return <VibratoControlExercise onBack={() => setActive(null)} />;
+  // otwarcie ćwiczenia to nowy wpis w historii
+  useNavListener((st) => setActive((st.ex as ExerciseId | undefined) ?? null));
+  const open = (id: ExerciseId) => {
+    navPush({ ex: id }, ['view']);
+    setActive(id);
+  };
+  const back = () => {
+    if (navState().ex) window.history.back();
+    else setActive(null);
+  };
+  switch (active) {
+    case 'prepare': return <PrepareExercise onBack={back} />;
+    case 'stability': return <IntonationStabilityExercise onBack={back} />;
+    case 'range': return <RangeExercise onBack={back} />;
+    case 'formant': return <SingerFormantExercise onBack={back} />;
+    case 'trill': return <LipTrillExercise onBack={back} />;
+    case 'warmup': return <WarmupExercise onBack={back} />;
+    case 'mpt': return <LongToneExercise onBack={back} />;
+    case 'air': return <BreathinessExercise onBack={back} />;
+    case 'vibrato-control': return <VibratoControlExercise onBack={back} />;
+    case 'chord': return <ChordExercise onBack={back} />;
+    case 'vibrato-on-demand': return <VibratoOnDemandExercise onBack={back} />;
+    case 'intervals': return <IntervalsExercise onBack={back} />;
+    case 'messa': return <MessaDiVoceExercise onBack={back} />;
+    default: break;
   }
 
   return (
@@ -106,7 +141,7 @@ export default function Exercises({ initialExercise = null }: ExercisesProps) {
               )}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
                 {section.tiles.map((tile) => (
-                  <Tile key={tile.id} tile={tile} onOpen={setActive} />
+                  <Tile key={tile.id} tile={tile} onOpen={open} />
                 ))}
               </div>
             </section>

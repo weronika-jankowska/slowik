@@ -10,15 +10,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.3.3",
+    "audio-decode": "^3.12.0",
+    "kissfft-js": "^0.1.8",
     "lucide-react": "^1.28.0",
+    "mpg123-decoder": "^1.0.3",
     "node-wav": "^0.0.2",
     "pitchy": "^4.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@types/node": "^24.19.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.19.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
@@ -27,6 +30,7 @@
     "postcss": "^8.5.25",
     "tailwindcss": "^4.3.3",
     "ts-node": "^10.9.2",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.2",
     "vite": "^8.2.0"
   }

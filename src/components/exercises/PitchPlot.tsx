@@ -2,10 +2,9 @@ import { useEffect, useRef, type MutableRefObject } from 'react';
 import type { AttemptData } from '../../utils/vibratoExercise';
 
 interface PitchPlotProps {
-  /** Dane rysowane „na żywo”: komponent czyta je z refa w każdej klatce animacji. */
+  /** Dane rysowane „na żywo” */
   dataRef: MutableRefObject<AttemptData>;
   durationSec: number;
-  /** Połowa szerokości zielonego pasma w centach (pasmo: −band … +band). */
   bandCents: number;
   /** Zakres osi pionowej: −range … +range centów. */
   rangeCents?: number;
@@ -13,6 +12,8 @@ interface PitchPlotProps {
   targetLabel: string;
   /** Czy pokazywać „głowicę” (bieżący punkt). */
   running: boolean;
+  backgroundRef?: MutableRefObject<{ t: number[]; cents: number[] }>;
+  zones?: { t0: number; t1: number; label: string; accent: boolean }[];
 }
 
 const GREEN = '52, 211, 153'; // emerald-400, jak w analizie głosu
@@ -25,7 +26,7 @@ const C_BAD: RGB = [244, 63, 94]; // nasycony czerwony
 const mix = (a: RGB, b: RGB, k: number): RGB => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
 const rgbStr = (c: RGB) => `rgb(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])})`;
 
-/** Płynny kolor zależny od odległości od dźwięku: zielony w pasmie, potem żółty, potem czerwony. */
+/** Płynny kolor zależny od odległości od dźwięku */
 function colorForCents(absCents: number, band: number): RGB {
   if (absCents <= band) return C_GOOD;
   if (absCents <= 2 * band) return mix(C_GOOD, C_MID, (absCents - band) / band);
@@ -34,11 +35,11 @@ function colorForCents(absCents: number, band: number): RGB {
 }
 const PAD = { left: 46, right: 14, top: 14, bottom: 26 };
 
-export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents = 50, bandLabel, targetLabel, running }: PitchPlotProps) {
+export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents = 50, bandLabel, targetLabel, running, backgroundRef, zones }: PitchPlotProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
-  const propsRef = useRef({ durationSec, bandCents, rangeCents, bandLabel, targetLabel, running });
-  propsRef.current = { durationSec, bandCents, rangeCents, bandLabel, targetLabel, running };
+  const propsRef = useRef({ durationSec, bandCents, rangeCents, bandLabel, targetLabel, running, zones });
+  propsRef.current = { durationSec, bandCents, rangeCents, bandLabel, targetLabel, running, zones };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -92,7 +93,10 @@ export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents 
       ctx.font = '11px Cardo, Georgia, serif';
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'right';
-      for (const c of [-50, -25, 0, 25, 50]) {
+      const gridStep = range > 60 ? 50 : 25;
+      const gridLines: number[] = [];
+      for (let c = -Math.floor(range / gridStep) * gridStep; c <= range; c += gridStep) gridLines.push(c);
+      for (const c of gridLines) {
         if (Math.abs(c) > range) continue;
         const y = yOf(c);
         ctx.strokeStyle = c === 0 ? 'rgba(255,255,255,.32)' : 'rgba(255,255,255,.10)';
@@ -122,6 +126,21 @@ export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents 
       ctx.fillText(`centy względem dźwięku ${tLabel}`, 0, 0);
       ctx.restore();
 
+      // odcinki czasu z podpisami (tło + opis u góry odcinka)
+      const zs = propsRef.current.zones;
+      if (zs) {
+        ctx.font = '11px Cardo, Georgia, serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        for (const z of zs) {
+          const za = xOf(z.t0), zb = xOf(z.t1);
+          ctx.fillStyle = z.accent ? 'rgba(255,122,198,.10)' : 'rgba(255,255,255,.04)';
+          ctx.fillRect(za, y0, zb - za, y1 - y0);
+          ctx.fillStyle = z.accent ? 'rgba(255,190,230,.9)' : 'rgba(255,255,255,.7)';
+          ctx.fillText(z.label, (za + zb) / 2, y0 + 4);
+        }
+      }
+
       // zielone pasmo (rozjaśnia się, gdy głos jest w środku)
       const bTop = yOf(band);
       const bBot = yOf(-band);
@@ -138,7 +157,25 @@ export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents 
       ctx.fillStyle = `rgba(190, 255, 215, ${inBandNow ? 1 : 0.85})`;
       if (bLabel) ctx.fillText(bLabel, x0 + 8, bTop - 3);
 
-      // tor f0: kolor płynnie zależy od odległości od dźwięku wzorcowego, linia świeci
+      // cienka linia w tle (np. surowe f0 z wibratem)
+      const bg = backgroundRef?.current;
+      if (bg && bg.t.length > 1) {
+        ctx.strokeStyle = 'rgba(255,255,255,.38)';
+        ctx.lineWidth = 1.2;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        let penDown = false;
+        for (let i = 0; i < bg.t.length; i++) {
+          const c = bg.cents[i] ?? NaN;
+          const t = bg.t[i] ?? 0;
+          const gap = i > 0 && t - (bg.t[i - 1] ?? 0) > 0.12;
+          if (!Number.isFinite(c) || gap) { penDown = false; if (!Number.isFinite(c)) continue; }
+          if (penDown) ctx.lineTo(xOf(t), yOf(c)); else { ctx.moveTo(xOf(t), yOf(c)); penDown = true; }
+        }
+        ctx.stroke();
+      }
+
+      // tor f0
       type Seg = { x0: number; y0: number; x1: number; y1: number; grad: CanvasGradient };
       const segs: Seg[] = [];
       for (let i = 1; i < data.t.length; i++) {
@@ -156,7 +193,7 @@ export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents 
       }
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      // poświata: kilka szerszych, półprzezroczystych przejść, a na końcu ostry rdzeń
+      // poświata
       const passes: [number, number][] = [[9, 0.05], [5.5, 0.12], [2.6, 1]];
       for (const [w, alpha] of passes) {
         ctx.globalAlpha = alpha;
@@ -195,7 +232,7 @@ export default function PitchPlot({ dataRef, durationSec, bandCents, rangeCents 
     };
     raf = requestAnimationFrame(draw);
     return () => { cancelAnimationFrame(raf); ro.disconnect(); };
-  }, [dataRef]);
+  }, [dataRef, backgroundRef]);
 
   return (
     <div ref={boxRef} className="relative w-full h-full">

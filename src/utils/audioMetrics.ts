@@ -29,6 +29,14 @@ export interface AcousticMetricsState {
   spr: number;
   sppFreqHz: number;
   vibrato: VibratoAnalysisResult;
+  /** Powietrze w głosie (utils/breathiness.ts) */
+  breathCppsDb?: number;
+  breathHnrDb?: number;
+  /** Nachylenie widma */
+  breathTiltDbOct?: number;
+  breathModel?: number;
+  breathIndex?: number;
+  breathLevel?: 'none' | 'moderate' | 'clear' | null;
 }
 
 export interface MPFRResult {
@@ -142,9 +150,15 @@ export function calculateRMS(buffer: Float32Array): number {
   return Math.sqrt(sum / Math.max(1, buffer.length));
 }
 
-export function pitchYIN(buffer: Float32Array, sampleRate: number, threshold = 0.15): number {
+/** YIN z miarą pewności */
+export function pitchYINConfidence(
+  buffer: Float32Array,
+  sampleRate: number,
+  threshold = 0.15
+): { f0: number; aperiodicity: number; clear: boolean } {
+  const none = { f0: -1, aperiodicity: 1, clear: false };
   const bufferSize = Math.floor(buffer.length / 2);
-  if (bufferSize < 4) return -1;
+  if (bufferSize < 4) return none;
   const yinBuffer = new Float64Array(bufferSize);
 
   for (let t = 0; t < bufferSize; t++) {
@@ -164,8 +178,10 @@ export function pitchYIN(buffer: Float32Array, sampleRate: number, threshold = 0
   }
 
   let tau = -1;
+  let clear = false;
   for (let t = 2; t < bufferSize; t++) {
     if ((yinBuffer[t] ?? 1) < threshold) {
+      clear = true;
       while (t + 1 < bufferSize && (yinBuffer[t + 1] ?? 1) < (yinBuffer[t] ?? 1)) {
         t++;
       }
@@ -183,7 +199,7 @@ export function pitchYIN(buffer: Float32Array, sampleRate: number, threshold = 0
         tau = t;
       }
     }
-    if (globalMin > 0.5 || tau <= 0) return -1;
+    if (globalMin > 0.5 || tau <= 0) return none;
   }
 
   let betterTau = tau;
@@ -192,7 +208,12 @@ export function pitchYIN(buffer: Float32Array, sampleRate: number, threshold = 0
       tau + parabolicVertex(yinBuffer[tau - 1] ?? 0, yinBuffer[tau] ?? 0, yinBuffer[tau + 1] ?? 0).offset;
   }
 
-  return betterTau > 0 ? sampleRate / betterTau : -1;
+  const aperiodicity = yinBuffer[tau] ?? 1;
+  return betterTau > 0 ? { f0: sampleRate / betterTau, aperiodicity, clear } : none;
+}
+
+export function pitchYIN(buffer: Float32Array, sampleRate: number, threshold = 0.15): number {
+  return pitchYINConfidence(buffer, sampleRate, threshold).f0;
 }
 
 export function extractGlottalCycles(
@@ -387,21 +408,10 @@ export function calculateJitterShimmerCycleToCycle(
   };
 }
 
-// ---------------------------------------------------------------------------
-// HNR — algorytm zgodny z Praat: Sound ▸ To Harmonicity (ac)
-//   1. okno Hanninga o długości (periodsPerWindow / pitchFloor), domyślnie 4.5 / 75 Hz = 60 ms,
-//   2. odjęcie średniej ramki, autokorelacja (FFT, zero-padding),
-//   3. normalizacja r(τ)/r(0) i KOREKTA OKNA: dzielenie przez znormalizowaną autokorelację okna,
-//   4. maksimum r w zakresie lagów [1/pitchCeiling, 1/pitchFloor] z interpolacją paraboliczną
-//      (z kosztem oktawowym 0.01/oktawę, jak w Praat),
-//   5. HNR = 10·log10(r / (1 − r)); ramki niezvoiced (cisza / r poniżej progu) są pomijane,
-//   6. wynik pliku = ŚREDNIA z ramek dźwięcznych (tak jak "Get mean" w Praat).
-// ---------------------------------------------------------------------------
 export interface HarmonicityOptions {
-  /** 'cc' = Praat „To Harmonicity (cc)”, 'ac' = „To Harmonicity (ac)”. Domyślnie 'cc'. */
   method?: 'cc' | 'ac';
   pitchFloor?: number; // Hz, domyślnie 75 (Praat). Dla niskich głosów można dać 60.
-  pitchCeiling?: number; // Hz, domyślnie 600 (dla sopranu/śpiewu można podnieść do 1000+)
+  pitchCeiling?: number;
   timeStep?: number; // s, domyślnie 0.01
   silenceThreshold?: number; // względem globalnego piku, domyślnie 0.1
   voicingThreshold?: number; // domyślnie 0.45
@@ -446,10 +456,6 @@ interface HarmonicityPeak {
   lag: number; // w próbkach (ułamkowy)
 }
 
-/**
- * Szuka najlepszego maksimum znormalizowanej autokorelacji `r` w [minLag, maxLag].
- * `r[0]` = 1. Zwraca NaN-strength, jeśli nie ma żadnego maksimum lokalnego > 0.
- */
 function bestAutocorrPeak(
   r: Float64Array,
   minLag: number,
@@ -482,7 +488,7 @@ function strengthToHnrDb(r: number): number {
   return 10 * Math.log10(rr / (1 - rr));
 }
 
-/** Wspólny rdzeń: jedna ramka (już wycięta, bez okna) → { strength, lag, localPeak }. */
+/** Wspólny rdzeń obliczeń HNR */
 function harmonicityFrameCore(
   frame: ArrayLike<number>,
   sampleRate: number,
@@ -534,11 +540,7 @@ function windowNormAutocorr(win: Float64Array, nFft: number): Float64Array {
   return out;
 }
 
-/**
- * Ramka metody „cc” (Praat): znormalizowana korelacja wzajemna między odcinkiem x (długość n)
- * a tym samym odcinkiem przesuniętym o `lag`, bez okna. r[lag] = Σ x·y / sqrt(Σx² · Σy²).
- * Wylicza r[0..maxLag+2] przez FFT. Próbki poza sygnałem = 0.
- */
+/** Ramka metody „cc” (Praat) */
 function crossCorrelationFrame(
   sig: ArrayLike<number>,
   start: number,
@@ -595,11 +597,6 @@ function crossCorrelationFrame(
   return { r, localPeak };
 }
 
-/**
- * HNR całego sygnału w stylu Praat (To Harmonicity (ac) + Get mean).
- * Dla porównania z Praat/parselmouth używaj tych samych parametrów
- * (domyślnie: timeStep 0.01, pitchFloor 75, silenceThreshold 0.1, periodsPerWindow 4.5).
- */
 export function analyzeHarmonicity(
   signal: ArrayLike<number>,
   sampleRate: number,
@@ -671,7 +668,6 @@ export function analyzeHarmonicity(
       peak = bestAutocorrPeak(cc.r, minLag, maxLag, sampleRate, pitchFloor, octaveCost);
     }
 
-    // próg „niedźwięczności” jak w Praat (silence + voicing threshold)
     const unvoicedStrength =
       voicingThreshold +
       Math.max(0, 2 - localPeak / globalPeak / (silenceThreshold / (1 + voicingThreshold)));
@@ -694,12 +690,7 @@ export function analyzeHarmonicity(
   return res;
 }
 
-/**
- * HNR pojedynczej ramki (np. do podglądu na żywo). Ramka powinna mieć ok. 4–6 okresów
- * najniższego oczekiwanego F0 (≈ 40–70 ms) — dłuższa ramka przy vibrato zaniża wynik.
- * `f0` jest opcjonalną podpowiedzią (zawęża zakres lagów do f0/1.5 … f0·1.5).
- * Zwraca NaN dla ramki niedźwięcznej (zamiast „-20 dB”, które zaniżało mediany).
- */
+/** HNR pojedynczej ramki (np. do podglądu na żywo) */
 export function calculateHNR(
   frame: Float32Array | number[],
   sampleRate: number,
@@ -977,17 +968,6 @@ export function calculateSingerFormantAndSPR(
   return calculateSingerFormantAndSPRFromDb(readAnalyserDb(analyser), analyser.context.sampleRate, f0, rolloffThreshold);
 }
 
-// ---------------------------------------------------------------------------
-// CPP / CPPS — algorytm zgodny z Praat (PowerCepstrogram ▸ Get CPPS)
-//   • widmo ograniczone do maxFrequency (5 kHz) po pre-emfazie od 50 Hz,
-//   • cepstrum MOCY: c[n] = IDFT( ln|X|² ), a wartości w dB: 10·log10(c²)   ← kluczowa różnica,
-//     w poprzedniej wersji prominencję liczono w jednostkach liniowych cepstrum rzeczywistego,
-//   • linia trendu (prosta, Theil–Sen = „Robust” w Praat) dopasowana do dB-cepstrum
-//     na kwefrencji od 1 ms do końca cepstrum (a nie tylko w oknie wokół F0),
-//   • CPP = (maksimum dB-cepstrum w zakresie 1/pitchMax … 1/pitchMin) − linia trendu,
-//   • CPPS = ta sama wielkość po wygładzeniu cepstrogramu (w czasie 20 ms i w kwefrencji 0.5 ms),
-//     uśredniona po wszystkich ramkach.
-// ---------------------------------------------------------------------------
 export interface CPPSOptions {
   pitchFloor?: number; // Hz – wyznacza długość okna (3 / pitchFloor), domyślnie 60
   peakSearchMinHz?: number; // domyślnie 60
@@ -999,7 +979,7 @@ export interface CPPSOptions {
   quefrencyAveragingSec?: number; // domyślnie 0.0005
   tiltLineStartSec?: number; // domyślnie 0.001
   robustFit?: boolean; // true = Theil–Sen (Praat „Robust”), false = MNK
-  cepstrumLengthSec?: number; // koniec zakresu dopasowania linii trendu [s]; domyślnie 0.04 (dobrane empirycznie względem Praat)
+  cepstrumLengthSec?: number; // koniec zakresu dopasowania linii trendu [s]
 }
 
 export interface CPPSResult {
@@ -1028,7 +1008,6 @@ function buildCepstrumContext(sampleRate: number, widthSec: number, maxFrequency
   const K = Math.max(8, Math.min(nFft >> 1, Math.floor(fMax / binHz)));
   const fMaxActual = K * binHz;
   const dq = 1 / (2 * fMaxActual);
-  // długość cepstrum jak w Praat (próbkowanie 2·maxFrequency, FFT potęgi dwójki, połowa widma)
   const nFft10k = nextPow2(Math.round(widthSec * 2 * fMax));
   const qEnd = qEndOverride ?? (nFft10k / 2) * (1 / (2 * fMax));
   const Q = Math.max(16, Math.floor(qEnd / dq) + 1);
@@ -1044,7 +1023,6 @@ function buildCepstrumContext(sampleRate: number, widthSec: number, maxFrequency
   return { nWin, nFft, K, Q, dq, win: hannWindow(nWin), cosTable };
 }
 
-/** Cepstrum mocy c² jednej ramki (już po pre-emfazie), w jednostkach liniowych. */
 function powerCepstrumOfFrame(
   seg: ArrayLike<number>,
   ctx: CepstrumContext,
@@ -1127,8 +1105,7 @@ function peakProminenceDb(
 
   const xs: number[] = [];
   const ys: number[] = [];
-  // Theil–Sen ma koszt O(n² log n); linia trendu jest gładka, więc wystarczy co 3. punkt
-  // (≈9× mniej par, praktycznie ten sam wynik). Dla MNK używamy wszystkich punktów.
+  // Theil–Sen ma koszt O(n² log n)
   const stride = robust ? 3 : 1;
   for (let i = iFit0; i < Q; i += stride) {
     xs.push(i * dq);
@@ -1169,7 +1146,6 @@ function preEmphasize(x: ArrayLike<number>, sampleRate: number, freqHz: number):
   return out;
 }
 
-/** Cepstral Peak Prominence Smoothed (jak Praat „Get CPPS”) dla całego sygnału. */
 export function calculateCPPS(signal: ArrayLike<number>, sampleRate: number, opts: CPPSOptions = {}): CPPSResult {
   const pitchFloor = opts.pitchFloor ?? 60;
   const peakMin = opts.peakSearchMinHz ?? 60;
@@ -1212,7 +1188,7 @@ export function calculateCPPS(signal: ArrayLike<number>, sampleRate: number, opt
   const F = powerFrames.length;
   if (F === 0) return res;
 
-  // wygładzanie cepstrogramu: czas, potem kwefrencja (na wartościach mocy)
+  // wygładzanie cepstrogramu
   const halfT = Math.max(0, Math.floor(timeAvg / 2 / timeStep));
   const halfQ = Math.max(0, Math.floor(Math.round(quefAvg / ctx.dq) / 2));
   const timeSmoothed: Float64Array[] = [];
@@ -1247,11 +1223,6 @@ export function calculateCPPS(signal: ArrayLike<number>, sampleRate: number, opt
   return res;
 }
 
-/**
- * CPP pojedynczej ramki (bez wygładzania w czasie) w skali dB zgodnej z Praat.
- * Ramka powinna mieć ≥ 3/pitchFloor s (≈ 50 ms dla 60 Hz). Do raportowania wyników
- * z całych nagrań używaj `calculateCPPS`.
- */
 export function calculateCPP(
   buffer: Float32Array,
   sampleRate: number,
@@ -1303,6 +1274,34 @@ function emptyVibrato(): VibratoAnalysisResult {
     sinusoidality: 0,
     hasVibrato: false
   };
+}
+
+/** Sinusoidalność wibrato VIB_S (Żwan, Kostek 2008) */
+export function vibratoSinusoidality(contour: number[], periodSamples: number): number {
+  if (!(periodSamples > 1)) return 0;
+  const periods = Math.floor(contour.length / periodSamples);
+  if (periods < 2) return 0;
+  const N = Math.round(periods * periodSamples);
+  const x = contour.slice(0, N);
+  let mean = 0;
+  for (const v of x) mean += v;
+  mean /= N;
+  let maxP = 0;
+  let sumP = 0;
+  for (let k = 1; k <= Math.floor(N / 2); k++) {
+    let re = 0;
+    let im = 0;
+    for (let n = 0; n < N; n++) {
+      const a = (-2 * Math.PI * k * n) / N;
+      const v = x[n]! - mean;
+      re += v * Math.cos(a);
+      im += v * Math.sin(a);
+    }
+    const pw = re * re + im * im;
+    sumP += pw;
+    if (pw > maxP) maxP = pw;
+  }
+  return sumP > 0 ? maxP / sumP : 0;
 }
 
 export function analyzeVibratoFull(
@@ -1492,14 +1491,16 @@ export function analyzeVibratoFull(
     firstTime -
     (validEntries[0]?.t ?? firstTime) +
     (onsetIndex === 0 ? 0 : (seriesOffset + onsetIndex + windowPer / 2) * dt);
-  const sinusoidality = Math.max(0, Math.min(1, maxCorr));
+  // Okresowość konturu (maks. autokorelacji)
+  const periodicity = Math.max(0, Math.min(1, maxCorr));
+  const sinusoidality = vibratoSinusoidality(series.slice(steadyStart), fineLag);
 
   const hasVibrato =
     extentCents >= 15 &&
     extentCents <= 220 &&
     rateHz >= 4.0 &&
     rateHz <= 8.2 &&
-    sinusoidality >= 0.38;
+    periodicity >= 0.38;
 
   return {
     rateHz: Math.round(rateHz * 10) / 10,
