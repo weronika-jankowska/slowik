@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import MelodyPlot from './MelodyPlot';
-import { BTN, BTN_PRIMARY, BTN_SMALL, MicProblem, NotePicker, ResultHeader, ResultTiles, Segmented } from './exerciseUi';
+import { BTN, BTN_PRIMARY, BTN_SMALL, MicProblem, NotePicker, ResultHeader, ResultTiles, Segmented, withItalics } from './exerciseUi';
 import { useMicPitch, type PitchFrame } from '../../hooks/useMicPitch';
 import { centsBetween, formatDecimalPl, getCalibratedMidiFreq, midiToNoteName } from '../../utils/noteUtils';
 import { audioDebug, pianoSampler } from '../../utils/pianoSampler';
@@ -42,7 +42,7 @@ const MOVING_SEMITONES = 0.5;
 
 const HARMONY_INTRO = [
   'Usłyszysz melodię pianina (pryma na jednym dźwięku).',
-  'Po każdym powtórzeniu usłyszysz Twój pierwszy dźwięk. Weź oddech i śpiewaj ten dźwięk na sylabach „ma-me-mi-mo-mu”. W tym samym czasie dźwięki pianina będą tercję niżej od Twojego głosu. Stwórz z nimi harmonię.',
+  'Po każdym powtórzeniu usłyszysz Twój pierwszy dźwięk. Weź oddech i śpiewaj ten dźwięk na sylabach <i>ma-me-mi-mo-mu</i>. W tym samym czasie dźwięki pianina będą tercję niżej od Twojego głosu. Stwórz z nimi harmonię.',
   'Każde powtórzenie rozpoczyna się o {krok} wyżej, aż do najwyższego dźwięku, a następnie schodzi z każdym powtórzeniem coraz niżej.',
   'Możesz dopasować zakres dźwięków poniżej.'
 ];
@@ -105,7 +105,7 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
   // rozśpiewka
   const [syllableId, setSyllableId] = useState('mi-ja');
   const syllableOpt = pattern.syllableOptions?.find((o) => o.id === syllableId) ?? pattern.syllableOptions?.[0];
-  const singText = syllableOpt ? `„${syllableOpt.label}”` : lyricsText(pattern) ?? '';
+  const singText = syllableOpt ? `<i>${syllableOpt.label}</i>` : lyricsText(pattern) ?? '';
   // „na sylabach „mi-ja”” / „na sylabie „no””
   const syllablesPhrase = syllableOpt ? `${syllableOpt.id === 'mi-ja' ? 'sylabach' : 'sylabie'} ${singText}` : '';
   const vocalHint = syllableOpt?.hint ?? pattern.hint;
@@ -354,7 +354,7 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
                 </div>
                 <div className="flex flex-col items-center">
                   <span className={`text-[11px] font-semibold tracking-wider uppercase ${stage.stage === 'sing' ? 'text-emerald-300' : 'text-white/80'}`}>
-                    {stage.stage === 'sing' && harmony ? 'Śpiewaj tercję wyżej' : stage.stage === 'sing' && vocal ? `Śpiewaj ${singText}` : stage.stage === 'demo' && harmony ? 'Posłuchaj swojej melodii' : STAGE_LABEL[stage.stage]}
+                    {stage.stage === 'sing' && harmony ? 'Śpiewaj tercję wyżej' : stage.stage === 'sing' && vocal ? withItalics(`Śpiewaj ${singText}`) : stage.stage === 'demo' && harmony ? 'Posłuchaj swojej melodii' : STAGE_LABEL[stage.stage]}
                   </span>
                   {!noPitch && (
                     <span className={`text-xs font-bold font-mono ${!live || !Number.isFinite(live.cents) ? 'text-white/40' : liveHit ? 'text-emerald-400' : 'text-amber-300'}`}>
@@ -396,9 +396,9 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
             {stageSwitcher}
             <ol className="font-cardo text-[14px] sm:text-[15px] text-[#2c49a8] leading-snug flex flex-col gap-1.5 list-none">
               {harmony ? (
-                HARMONY_INTRO.map((line) => <li key={line}>{line.split('{krok}').join(stepWord).split('{sylaby}').join(syllablesPhrase || `sylabach ${singText}`)}</li>)
+                HARMONY_INTRO.map((line) => <li key={line}>{withItalics(line.split('{krok}').join(stepWord).split('{sylaby}').join(syllablesPhrase || `sylabach ${singText}`))}</li>)
               ) : vocal && pattern.intro ? (
-                pattern.intro.map((line) => <li key={line}>{line.split('{krok}').join(stepWord).split('{sylaby}').join(syllablesPhrase)}</li>)
+                pattern.intro.map((line) => <li key={line}>{withItalics(line.split('{krok}').join(stepWord).split('{sylaby}').join(syllablesPhrase))}</li>)
               ) : (
                 <>
                   <li>Usłyszysz melodię pianina. Posłuchaj jej i zobacz, jak układają się dźwięki.</li>
@@ -409,7 +409,7 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
               )}
               <li className="text-[13px] text-[#466cd2] opacity-90">
                 {vocal
-                  ? vocalHint
+                  ? withItalics(vocalHint ?? '')
                   : effectiveArticulation === 'separate'
                   ? 'Oddzielne dźwięki: rób przerwy między kolejnymi dźwiękami. Każdy z nich śpiewaj trylem. Ze względu na krótkie brzmienie dźwięków aplikacja nie będzie mierzyć Twojej intonacji.'
                   : 'Legato: prowadź tryl płynnie przez całą melodię, bez przerw. Możesz obserwować na bieżąco swoją intonację.'}
@@ -438,7 +438,7 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
                   }`}
                 >
                   <span className="block font-seasons text-[14px] leading-tight">{p.name}</span>
-                  <span className="block font-cardo text-[11.5px] text-[#466cd2] leading-snug mt-0.5">{p.description}</span>
+                  <span className="block font-cardo text-[11.5px] text-[#466cd2] leading-snug mt-0.5">{withItalics(p.description)}</span>
                 </button>
               ))}
             </div>
@@ -448,7 +448,7 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
               {vocal && pattern.syllableOptions && (
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] uppercase tracking-wider opacity-70">Sylaby</span>
-                  <Segmented value={syllableOpt?.id ?? 'mi-ja'} onChange={setSyllableId} options={pattern.syllableOptions.map((o) => ({ id: o.id, label: o.label }))} />
+                  <Segmented value={syllableOpt?.id ?? 'mi-ja'} onChange={setSyllableId} options={pattern.syllableOptions.map((o) => ({ id: o.id, label: `<i>${o.label}</i>` }))} />
                 </div>
               )}
               {!vocal && (

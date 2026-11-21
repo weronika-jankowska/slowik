@@ -61,7 +61,7 @@ export default function BreathTake({ durationSec, referenceMidi, onDone, onCance
         {take.phase === 'recording' && (
           <StatusRow
             left={{ label: 'Czas', value: `${formatDecimalPl(take.started ? take.elapsed : 0, 1)} / ${durationSec} s` }}
-            center={!take.started ? 'Zaśpiewaj [A]' : 'Śpiewaj równe [A]'}
+            center={!take.started ? <>Zaśpiewaj <i className="normal-case">a</i></> : <>Śpiewaj równe <i className="normal-case">a</i></>}
             centerSub={!take.started ? undefined : inBand ? 'na dźwięku wzorcowym' : 'wróć do dźwięku wzorcowego'}
             centerClass={inBand || !take.started ? 'text-emerald-300' : 'text-white/80'}
             right={{ label: 'Twój głos', value: live?.f0 ? `${formatDecimalPl(live.f0, 1)} Hz` : '--- Hz' }}

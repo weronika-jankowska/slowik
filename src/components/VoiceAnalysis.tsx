@@ -379,6 +379,8 @@ function evaluateFeedbackMetrics(
   return items;
 }
 
+const INTRO_HIDE_KEY = 'slowik_hide_analysis_intro';
+
 export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = 'test' }: VoiceAnalysisProps) {
   const [stage, setStage] = useState<Stage>(initialMode === 'history' ? 'HISTORY_REVIEW' : 'SCALE_UP_TEST');
 
@@ -471,12 +473,29 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     }
   }, []);
 
+  // okno z instrukcją przed analizą (można wyłączyć „Nie pokazuj ponownie”)
+  const [showIntro, setShowIntro] = useState(() => {
+    if (initialMode !== 'test') return false;
+    try { return localStorage.getItem(INTRO_HIDE_KEY) !== '1'; } catch { return true; }
+  });
+  const [hideIntro, setHideIntro] = useState(false);
+  const closeIntro = () => {
+    if (hideIntro) { try { localStorage.setItem(INTRO_HIDE_KEY, '1'); } catch { /* brak pamięci */ } }
+    setShowIntro(false);
+  };
   useEffect(() => {
-    if (initialMode === 'test') {
+    if (!showIntro) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeIntro(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  useEffect(() => {
+    if (initialMode === 'test' && !showIntro) {
       void initAudio();
     }
-    return () => cleanupAudio();
-  }, [initialMode]);
+  }, [initialMode, showIntro]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => cleanupAudio(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const initAudio = async () => {
     try {
@@ -990,6 +1009,42 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     if (canGoNext) setCurrentHistoryIndex(prev => prev + 1);
   };
 
+  if (showIntro) {
+    return (
+      <div className="w-full min-h-screen flex items-center justify-center px-4 py-24 sm:py-10 relative z-10">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="analysis-intro-title"
+          className="relative w-full max-w-[720px] backdrop-blur-md shadow-lg rounded-[10px] border border-white/45 bg-white/42 px-6 sm:px-[30px] pt-[22px] pb-[26px] text-[#2c49a8]"
+        >
+          <button
+            type="button"
+            onClick={closeIntro}
+            aria-label="Zamknij instrukcję i rozpocznij analizę"
+            title="Zamknij"
+            className="absolute top-[18px] right-5 p-0.5 leading-none cursor-pointer hover:opacity-70 transition-opacity"
+          >
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+              <path d="M2 2 L20 20 M20 2 L2 20" />
+            </svg>
+          </button>
+          <h2 id="analysis-intro-title" className="font-seasons text-[28px] leading-tight text-center mx-9 uppercase">Analiza głosu</h2>
+          <p className="font-cardo text-center text-[15px] opacity-80 mt-1 mb-4">instrukcja</p>
+          <div className="font-cardo text-[15.5px] leading-[1.38] flex flex-col gap-2.5 text-[#3354b8]">
+            <p>Za chwilę zobaczysz klawiaturę pianina. W pierwszym etapie analizy głosu Twoim zadaniem jest powtarzanie kolejnych dźwięków (np. na samogłosce <i>a</i>). Aplikacja zbada Twoją skalę głosu.</p>
+            <p>W następnym etapie usłyszysz pojedynczy dźwięk ze środka Twojej skali. Powtórz go na samogłosce <i>a</i>. Aplikacja zbada parametry Twojego głosu.</p>
+            <p>Po wykonaniu analizy zobaczysz swoje wyniki. Będą one zapisane w przeglądarce. Możesz do nich wracać i obserwować, jak Twój głos zmienia się na przestrzeni czasu.</p>
+          </div>
+          <label className="mt-5 flex items-center justify-center gap-2 font-cardo text-[14px] cursor-pointer select-none">
+            <input type="checkbox" checked={hideIntro} onChange={(e) => setHideIntro(e.target.checked)} className="w-4 h-4 accent-[#18388f] cursor-pointer" />
+            Nie pokazuj ponownie
+          </label>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`w-full ${stage === 'METRICS_REVIEW' || stage === 'HISTORY_REVIEW' ? 'h-screen overflow-y-auto overflow-x-hidden' : 'min-h-screen py-6 [@media(max-height:500px)]:py-2'} flex flex-col items-center justify-between px-4 relative z-10 font-cardo text-white`}>
       
@@ -1284,7 +1339,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
               POWTÓRZ DŹWIĘK
             </h2>
             <p className="text-sm opacity-80 mt-1">
-              Zaśpiewaj dźwięk na samogłosce [A]
+              Zaśpiewaj dźwięk na samogłosce <i>a</i>
             </p>
           </div>
 
@@ -1378,7 +1433,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
               onClick={() => initMultidisciplinaryTest(mpfrResult === null)}
               className="bg-white/45 hover:bg-white/60 text-[#466cd2] font-seasons font-normal text-xs sm:text-sm tracking-[0.08em] uppercase px-4 sm:px-6 py-2.5 rounded-xl shadow-md backdrop-blur-sm transition-all border border-white/30 cursor-pointer"
             >
-              POWTÓRZ DŹWIĘK [A]
+              POWTÓRZ DŹWIĘK 
             </button>
             <button
               type="button"

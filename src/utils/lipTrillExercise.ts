@@ -77,14 +77,14 @@ export const VOCAL_PATTERNS: TrillPattern[] = [
   {
     id: 'prima',
     name: 'Pryma',
-    description: 'Jeden dźwięk, sylaby ma-me-mi-mo-mu',
+    description: 'Jeden dźwięk, sylaby <i>ma-me-mi-mo-mu</i>',
     bpm: 90,
     allowSeparate: false,
     notes: run([0, 0, 0, 0, 0], 1, 2),
     lyrics: ['ma', 'me', 'mi', 'mo', 'mu'],
     intro: [
       'Usłyszysz dźwięk pianina. W tym ćwiczeniu musisz zaśpiewać różne sylaby na tym samym dźwięku.',
-      'Po rozpoczęciu ćwiczenia usłyszysz pierwszy dźwięk melodii. Weź oddech i zaśpiewaj całą melodię na sylabach „ma-me-mi-mo-mu”.',
+      'Po rozpoczęciu ćwiczenia usłyszysz pierwszy dźwięk melodii. Weź oddech i zaśpiewaj całą melodię na sylabach <i>ma-me-mi-mo-mu</i>.',
       'Każde kolejne powtórzenie rozpoczyna się o {krok} wyżej, aż melodia dojdzie do najwyższego dźwięku. Potem początkowe dźwięki będą rozpoczynać się o {krok} niżej w każdym powtórzeniu.',
       'Możesz wybrać dowolny zakres, na którym chcesz wykonać ćwiczenie.'
     ],
@@ -93,14 +93,14 @@ export const VOCAL_PATTERNS: TrillPattern[] = [
   {
     id: 'five',
     name: 'Gama do kwinty',
-    description: 'Do-re-mi-fa-sol i z powrotem',
+    description: '<i>Do-re-mi-fa-sol</i> i z powrotem',
     bpm: 80,
     allowSeparate: false,
     notes: run([0, 2, 4, 5, 7, 5, 4, 2, 0], 0.5, 1.5),
     syllableOptions: [
-      { id: 'mi-ja', label: 'mi-ja', hint: 'Śpiewaj „mi” na dźwiękach w górę i „ja” na dźwiękach w dół. Całą melodię zaśpiewaj na jednym oddechu, legato.' },
-      { id: 'no', label: 'no', hint: 'Śpiewaj „no” na każdym dźwięku. Całą melodię zaśpiewaj na jednym oddechu, legato.' },
-      { id: 'la', label: 'la', hint: 'Śpiewaj „la” na każdym dźwięku. Całą melodię zaśpiewaj na jednym oddechu, legato.' }
+      { id: 'mi-ja', label: 'mi-ja', hint: 'Śpiewaj <i>mi</i> na dźwiękach w górę i <i>ja</i> na dźwiękach w dół. Całą melodię zaśpiewaj na jednym oddechu, legato.' },
+      { id: 'no', label: 'no', hint: 'Śpiewaj <i>no</i> na każdym dźwięku. Całą melodię zaśpiewaj na jednym oddechu, legato.' },
+      { id: 'la', label: 'la', hint: 'Śpiewaj <i>la</i> na każdym dźwięku. Całą melodię zaśpiewaj na jednym oddechu, legato.' }
     ],
     intro: [
       'Usłyszysz melodię pianina. Posłuchaj jej i zwróć uwagę na graficzny układ dźwięków.',
@@ -112,14 +112,14 @@ export const VOCAL_PATTERNS: TrillPattern[] = [
   {
     id: 'domisol',
     name: 'Do-mi-sol',
-    description: 'Do-mi-sol-mi-do-fa-la-fa-do-mi-sol-mi-do',
+    description: '<i>Do-mi-sol-mi-do-fa-la-fa-do-mi-sol-mi-do</i>',
     bpm: 80,
     allowSeparate: false,
     notes: run([0, 4, 7, 4, 0, 5, 9, 5, 0, 4, 7, 4, 0], 0.5, 1.5),
     lyrics: ['do', 'mi', 'sol', 'mi', 'do', 'fa', 'la', 'fa', 'do', 'mi', 'sol', 'mi', 'do'],
     intro: [
       'Usłyszysz melodię pianina. Posłuchaj jej i zwróć uwagę na graficzny układ dźwięków.',
-      'W każdym powtórzeniu usłyszysz dźwięk, od którego musisz rozpocząć melodię. Weź oddech i zaśpiewaj całą melodię na sylabach „do-mi-sol-mi-do-fa-la-fa-do-mi-sol-mi-do”. Niezależnie od dźwięków, śpiewaj te same sylaby. Prowadź swój głos zgodnie z wyświetlanymi dźwiękami.',
+      'W każdym powtórzeniu usłyszysz dźwięk, od którego musisz rozpocząć melodię. Weź oddech i zaśpiewaj całą melodię na sylabach <i>do-mi-sol-mi-do-fa-la-fa-do-mi-sol-mi-do</i>. Niezależnie od dźwięków, śpiewaj te same sylaby. Prowadź swój głos zgodnie z wyświetlanymi dźwiękami.',
       'Każde powtórzenie rozpoczyna się o {krok} wyżej, aż do najwyższego dźwięku, a następnie dźwięki schodzą z każdym powtórzeniem coraz niżej.',
       'Możesz wybrać dowolny zakres, na którym chcesz wykonać ćwiczenie.'
     ],
@@ -128,7 +128,7 @@ export const VOCAL_PATTERNS: TrillPattern[] = [
 ];
 
 /** Sylaby wzoru do wyświetlenia, np. „ma-me-mi-mo-mu”. */
-export const lyricsText = (p: TrillPattern): string | null => p.singText ?? (p.lyrics ? `„${p.lyrics.join('-')}”` : null);
+export const lyricsText = (p: TrillPattern): string | null => p.singText ?? (p.lyrics ? `<i>${p.lyrics.join('-')}</i>` : null);
 
 export type Articulation = 'separate' | 'legato';
 

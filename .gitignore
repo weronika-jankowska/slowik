@@ -22,3 +22,19 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Pliki lokalne (poza aplikacją)
+/audio/
+/audio-breathiness/
+/literatura/
+/praca/
+/scripts/
+/logo.svg
+*.xlsx
+*.numbers
+*.csv
+*.py
+/vite.local.mjs
+/src/components/lab/
+/src/utils/breathLab.ts
+!/wyniki_hnr_cpp_ts.csv

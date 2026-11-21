@@ -52,7 +52,7 @@ export interface ResultTile { id: string; label: string; value: string; comment:
 
 export function withItalics(text: string): ReactNode {
   const parts = text.split(/<i>(.*?)<\/i>/);
-  return parts.length === 1 ? text : parts.map((p, k) => (k % 2 ? <i key={k}>{p}</i> : p));
+  return parts.length === 1 ? text : parts.map((p, k) => (k % 2 ? <i key={k} className="normal-case">{p}</i> : p));
 }
 
 export function ResultHeader({ tone, headline, detail }: { tone: keyof typeof TONE_COLOR; headline: string; detail: string }) {

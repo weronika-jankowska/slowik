@@ -236,7 +236,7 @@ export default function YawnSighExercise({ onBack, stageSwitcher, onPeak, next }
                   </div>
                   <div className="flex flex-col items-center">
                     <span className="text-[11px] font-semibold tracking-wider uppercase text-white/80">
-                      {!started ? 'Ziewnij i zaśpiewaj [A]' : live ? (aboveRange ? 'Ponad Twoim zakresem' : 'Zjedź płynnie w dół') : 'Brak dźwięku…'}
+                      {!started ? <>Ziewnij i zaśpiewaj <i className="normal-case">a</i></> : live ? (aboveRange ? 'Ponad Twoim zakresem' : 'Zjedź płynnie w dół') : 'Brak dźwięku…'}
                     </span>
                   </div>
                   <div className="flex flex-col items-end">

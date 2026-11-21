@@ -78,7 +78,7 @@ export default function BreathinessExercise({ onBack }: { onBack: () => void }) 
           {beforeFailed ? (
             <LightCard className="max-w-3xl text-center">
               <h2 className="font-seasons text-xl tracking-wide">Nie udało się zmierzyć głosu</h2>
-              <p className="font-cardo text-[14px] text-[#2c49a8] mt-1">Zaśpiewaj równe [A] przez cały czas nagrania, na dźwięku wzorcowym i nie za cicho, a potem powtórz pierwszy pomiar.</p>
+              <p className="font-cardo text-[14px] text-[#2c49a8] mt-1">Zaśpiewaj równe <i>a</i> przez cały czas nagrania, na dźwięku wzorcowym i nie za cicho, a potem powtórz pierwszy pomiar.</p>
             </LightCard>
           ) : (
             <p className="w-full max-w-3xl font-cardo text-[15px] sm:text-[16px] text-[#18388f] leading-snug text-center">
