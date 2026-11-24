@@ -1,20 +1,16 @@
 import pianoFrequenciesData from './pianoFrequencies.json';
-import { audioDebug, pianoSampler, referenceSampleFolder } from './pianoSampler';
+import { audioDebug, pianoSampler, referenceSampleFolder, sampleFilename } from './pianoSampler';
 
 const CALIBRATED_FREQUENCIES: Record<string, number> = pianoFrequenciesData as Record<string, number>;
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const NOTE_NAMES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
 
 export const midiToNoteName = (midi: number): string => {
   const idx = ((midi % 12) + 12) % 12;
   return `${NOTE_NAMES[idx] ?? 'C'}${Math.floor(midi / 12) - 1}`;
 };
 
-export const midiToSampleFilename = (midi: number): string => {
-  const idx = ((midi % 12) + 12) % 12;
-  return `${NOTE_NAMES_FLAT[idx] ?? 'C'}${Math.floor(midi / 12) - 1}.mp3`;
-};
+export const midiToSampleFilename = (midi: number): string => sampleFilename(midi);
 
 export const getCalibratedMidiFreq = (midi: number): number => {
   const calibrated = CALIBRATED_FREQUENCIES[midi.toString()];

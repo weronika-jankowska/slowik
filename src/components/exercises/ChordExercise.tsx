@@ -212,7 +212,7 @@ function ChordStage({ onBack, switcher }: { onBack: () => void; switcher: ReactN
             <NotePicker midi={midi} onChange={setMidi} min={MIN_MIDI} max={MAX_MIDI} label="Twój dźwięk" sub={`akord ${name}`} noteName={midiToNoteName} />
             <button type="button" onClick={() => void start()} className={BTN_PRIMARY}>Rozpocznij</button>
           </div>
-          {loadError && <p className="text-[13px] text-rose-700 text-center">Nie udało się wczytać nagrań pianina. Sprawdź, czy pliki są w folderze /piano-mp3.</p>}
+          {loadError && <p className="text-[13px] text-rose-700 text-center">Nie udało się wczytać nagrań pianina. Sprawdź, czy pliki są w folderze /grand-piano.</p>}
         </SetupCard>
       )}
 

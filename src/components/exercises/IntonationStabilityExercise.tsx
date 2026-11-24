@@ -17,6 +17,7 @@ import {
   stabilityFeedback,
   type StabilityFeedback
 } from '../../utils/intonationStability.ts';
+import AppFooter from '../AppFooter';
 
 type Phase = 'setup' | 'countdown' | 'sing' | 'result';
 
@@ -242,8 +243,8 @@ export default function IntonationStabilityExercise({ onBack }: { onBack: () => 
   const micProblem = mic.micState === 'denied' || mic.micState === 'error';
 
   return (
-    <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white select-none">
-      <div className="max-w-5xl mx-auto min-h-full px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5 relative">
+    <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white select-none flex flex-col">
+      <div className="max-w-5xl w-full mx-auto flex-[1_0_auto] px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5 relative">
         <div className="w-full flex justify-end">
           <button
             type="button"
@@ -397,6 +398,7 @@ export default function IntonationStabilityExercise({ onBack }: { onBack: () => 
           </div>
         )}
       </div>
+      <AppFooter />
     </div>
   );
 }

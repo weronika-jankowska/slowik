@@ -38,3 +38,4 @@ dist-ssr
 /src/components/lab/
 /src/utils/breathLab.ts
 !/wyniki_hnr_cpp_ts.csv
+/grand-piano-oryginal/

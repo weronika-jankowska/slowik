@@ -11,13 +11,14 @@ export function audioDebug(msg: string, data: Record<string, unknown> = {}): voi
   } catch { /* diagnostyka nie może psuć aplikacji */ }
 }
 
-const NOTE_NAMES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+/** Plik próbki pianina (grand-piano: p21 = A0 … p108 = C8, wyrównana głośność) */
+export function sampleFilename(midi: number): string {
+  return `p${Math.max(21, Math.min(108, Math.round(midi)))}_v79.mp3`;
+}
 
 /** Nazwa pliku jak w VoiceAnalysis */
 export function sampleUrl(midi: number): string {
-  const name = NOTE_NAMES_FLAT[((midi % 12) + 12) % 12] ?? 'C';
-  const octave = Math.floor(midi / 12) - 1;
-  return `/piano-mp3/${name}${octave}.mp3`;
+  return `/grand-piano/${sampleFilename(midi)}`;
 }
 
 // WYŁĄCZONE
@@ -25,7 +26,7 @@ const USE_STREAM_SINK = false;
 
 /** Folder z próbkami do zwykłego odtwarzacza <audio> */
 export function referenceSampleFolder(micOpen: boolean): string {
-  return micOpen ? '/piano-mp3-loud' : '/piano-mp3';
+  return micOpen ? '/grand-piano-loud' : '/grand-piano';
 }
 
 /** Głośność pogłosu względem dźwięku bezpośredniego. */

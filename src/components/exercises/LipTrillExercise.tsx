@@ -2,6 +2,7 @@ import { useState } from 'react';
 import LipTrillEngine from './LipTrillEngine';
 import LipTrillMelody from './LipTrillMelody';
 import { Segmented, readMpfrRange } from './exerciseUi';
+import AppFooter from '../AppFooter';
 
 type Stage = 'engine' | 'melody';
 
@@ -28,8 +29,8 @@ export default function LipTrillExercise({ onBack }: { onBack: () => void }) {
   );
 
   return (
-    <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white select-none">
-      <div className="max-w-5xl mx-auto min-h-full px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5 relative">
+    <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white select-none flex flex-col">
+      <div className="max-w-5xl w-full mx-auto flex-[1_0_auto] px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5 relative">
         <div className="w-full flex justify-end">
           <button
             type="button"
@@ -54,6 +55,7 @@ export default function LipTrillExercise({ onBack }: { onBack: () => void }) {
           <LipTrillMelody key="melody" mpfr={mpfr} stageSwitcher={switcher} onBack={onBack} />
         )}
       </div>
+      <AppFooter />
     </div>
   );
 }

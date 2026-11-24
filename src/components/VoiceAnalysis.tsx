@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import ParameterInfo from './ParameterInfo';
-import { audioDebug, referenceSampleFolder } from '../utils/pianoSampler';
+import AppFooter from './AppFooter';
+import { audioDebug, referenceSampleFolder, sampleFilename } from '../utils/pianoSampler';
 import { foldCentsToOctave } from '../utils/noteUtils';
 import { RAW_MIC_CONSTRAINTS, ensureRawMic } from '../utils/micSetup';
 import { PIANO_FRAME_STYLE } from './pianoFrame';
@@ -65,7 +66,6 @@ const RESULT_FRAME_STYLE = {
 /** Granatowy napis nad nazwą dźwięku. */
 const RESULT_LABEL_COLOR = '#18388f';
 
-const NOTE_NAMES_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 
 // Białe klawisze (gama C-dur) od C2 (36) do C6 (84)
 const C_MAJOR_SCALE_MIDIS: number[] = [
@@ -101,12 +101,7 @@ const midiToNoteName = (midi: number): string => {
   return `${name}${octave}`;
 };
 
-const midiToSampleFilename = (midi: number): string => {
-  const noteIndex = ((midi % 12) + 12) % 12;
-  const octave = Math.floor(midi / 12) - 1;
-  const name = NOTE_NAMES_FLAT[noteIndex] ?? "C";
-  return `${name}${octave}.mp3`;
-};
+const midiToSampleFilename = (midi: number): string => sampleFilename(midi);
 
 const getCalibratedMidiFreq = (midi: number): number => {
   const calibrated = CALIBRATED_FREQUENCIES[midi.toString()];
@@ -165,7 +160,7 @@ function evaluateFeedbackMetrics(
 
   const mpfrSemis = mpfr?.mpfrSemitones ?? 0;
   const mpfrComment = mpfr
-    ? `Twój zakres dźwięków obejmuje od ${mpfr.f0MinNoteName} do ${mpfr.f0MaxNoteName} (${mpfr.mpfrOctaves} oktawy).`
+    ? `Twój zakres dźwięków obejmuje od ${mpfr.f0MinNoteName} do ${mpfr.f0MaxNoteName} (${mpfr.mpfrOctaves} oktawy)`
     : 'Nie analizowano';
   items.push({
     id: 'mpfr',
@@ -430,6 +425,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
   const micStreamRef = useRef<MediaStream | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const playTimerRef = useRef<number | null>(null);
+  const fadeTimerRef = useRef<number | null>(null);
   const currentAudioSampleRef = useRef<HTMLAudioElement | null>(null);
 
   const stableHoldRef = useRef<number>(0);
@@ -516,6 +512,9 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
       const source = ctx.createMediaStreamSource(stream);
       source.connect(analyser);
 
+      // wczytanie próbek klawiatury z wyprzedzeniem – żeby żaden dźwięk nie przepadał przy wolnym wczytywaniu
+      for (let m = 36; m <= 84; m++) void fetch(`${referenceSampleFolder(true)}/${midiToSampleFilename(m)}`).catch(() => undefined);
+
       startScaleUpFlow();
     } catch (err) {
       alert("Wymagany dostęp do mikrofonu.");
@@ -523,25 +522,50 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     }
   };
 
-  const cleanupAudio = () => {
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    if (playTimerRef.current) clearTimeout(playTimerRef.current);
+  const stopCurrentSample = () => {
+    if (playTimerRef.current) {
+      clearTimeout(playTimerRef.current);
+      playTimerRef.current = null;
+    }
+    if (fadeTimerRef.current) {
+      clearInterval(fadeTimerRef.current);
+      fadeTimerRef.current = null;
+    }
     if (currentAudioSampleRef.current) {
+      currentAudioSampleRef.current.onended = null;
+      currentAudioSampleRef.current.onerror = null;
       currentAudioSampleRef.current.pause();
+      currentAudioSampleRef.current.currentTime = 0;
       currentAudioSampleRef.current = null;
     }
+  };
+
+  const cleanupAudio = () => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    stopCurrentSample();
     if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop());
     if (audioCtxRef.current) void audioCtxRef.current.close();
     audioCtxRef.current = null;
   };
 
   // Odtwarzanie rzeczywistych próbek pianina z plików MP3
-  const playPianoSample = (midi: number) => {
-    try {
-      if (currentAudioSampleRef.current) {
-        currentAudioSampleRef.current.pause();
-        currentAudioSampleRef.current.currentTime = 0;
+  const playPianoSample = (midi: number, onFinished?: () => void) => {
+    stopCurrentSample();
+
+    let finished = false;
+    const finishOnce = () => {
+      if (finished) return;
+      finished = true;
+      stopCurrentSample();
+      if (onFinished) {
+        playTimerRef.current = window.setTimeout(() => {
+          playTimerRef.current = null;
+          onFinished();
+        }, 80);
       }
+    };
+
+    try {
       const filename = midiToSampleFilename(midi);
       // przy włączonym mikrofonie Safari ścisza odtwarzanie
       const micOn = micStreamRef.current?.getAudioTracks().some(t => t.readyState === 'live') ?? false;
@@ -549,24 +573,56 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
       const audio = new Audio(url);
       audio.volume = 0.85;
       currentAudioSampleRef.current = audio;
-      audio.play().catch(e => console.warn(`Nie można odtworzyć próbki ${url}:`, e));
+
+      audio.onended = finishOnce;
+      audio.onerror = () => { audioDebug('sample error', { midi, url }); finishOnce(); };
+
+      // skrócenie dźwięku liczone od faktycznego początku odtwarzania (wczytanie pliku bywa wolne)
+      const startFade = () => {
+        if (finished || !onFinished) return;
+        if (playTimerRef.current) clearTimeout(playTimerRef.current);
+        playTimerRef.current = window.setTimeout(() => {
+          let step = 0;
+          const steps = 6;
+          fadeTimerRef.current = window.setInterval(() => {
+            step++;
+            if (currentAudioSampleRef.current) {
+              currentAudioSampleRef.current.volume = Math.max(0, 0.85 * (1 - step / steps));
+            }
+            if (step >= steps) {
+              finishOnce();
+            }
+          }, 25);
+        }, 950);
+      };
+      audio.addEventListener('playing', startFade, { once: true });
+      // zabezpieczenie: dźwięk w ogóle nie ruszył
+      if (onFinished) playTimerRef.current = window.setTimeout(() => { audioDebug('sample not started', { midi, url }); finishOnce(); }, 4000);
+
+      audio.play().catch(e => {
+        console.warn(`Nie można odtworzyć próbki ${url}:`, e);
+        audioDebug('sample play rejected', { midi, url, err: String(e) });
+        finishOnce();
+      });
     } catch (e) {
       console.error("Błąd podczas odtwarzania próbki pianina:", e);
+      finishOnce();
     }
   };
 
   const handleKeyClick = (midi: number) => {
-    playPianoSample(midi);
     if (stage === 'SCALE_UP_TEST' || stage === 'SCALE_DOWN_TEST') {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      if (playTimerRef.current) clearTimeout(playTimerRef.current);
       setIsListening(false);
       stableHoldRef.current = 0;
+      setCurrentF0(0);
 
-      playTimerRef.current = window.setTimeout(() => {
+      playPianoSample(midi, () => {
         setIsListening(true);
         runScalePitchTracking(midi, stage === 'SCALE_UP_TEST' ? 'UP' : 'DOWN');
-      }, 900);
+      });
+    } else {
+      playPianoSample(midi);
     }
   };
 
@@ -648,6 +704,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
   useEffect(() => () => releaseLandscape(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startScaleStep = (midi: number, mode: 'UP' | 'DOWN') => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     setCurrentMidi(midi);
     targetNoteFreqRef.current = getCalibratedMidiFreq(midi);
     setRedNote(null);
@@ -655,13 +712,10 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     stableHoldRef.current = 0;
     setCurrentF0(0);
 
-    playPianoSample(midi);
-
-    if (playTimerRef.current) clearTimeout(playTimerRef.current);
-    playTimerRef.current = window.setTimeout(() => {
+    playPianoSample(midi, () => {
       setIsListening(true);
       runScalePitchTracking(midi, mode);
-    }, 900);
+    });
   };
 
   const runScalePitchTracking = (midiVal: number, mode: 'UP' | 'DOWN') => {
@@ -681,6 +735,12 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
     const loop = () => {
       if (!analyserRef.current || !audioCtxRef.current) return;
+
+      const sample = currentAudioSampleRef.current;
+      if (sample && !sample.paused && !sample.ended) {
+        animFrameRef.current = requestAnimationFrame(loop);
+        return;
+      }
 
       analyser.getFloatTimeDomainData(buffer);
       const rms = calculateRMS(buffer);
@@ -777,12 +837,14 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
   const handleSkipScale = () => {
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    if (playTimerRef.current) clearTimeout(playTimerRef.current);
+    stopCurrentSample();
     setIsListening(false);
     initMultidisciplinaryTest(true);
   };
 
   const initMultidisciplinaryTest = (skippedScale = false) => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+
     let mpfr: MPFRResult | null = mpfrResult;
     if (skippedScale) {
       mpfr = null;
@@ -793,10 +855,11 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     }
     setMpfrResult(mpfr);
     setStage('MULTIDISCIPLINARY_A');
+    setIsListening(false);
+    setCurrentF0(0);
 
     const midMidi = mpfr ? Math.round((mpfr.f0MinMidi + mpfr.f0MaxMidi) / 2) : MIDI_C4;
     targetNoteFreqRef.current = getCalibratedMidiFreq(midMidi);
-    playPianoSample(midMidi);
 
     pitchBufferRef.current = [];
     pitchTimesRef.current = [];
@@ -820,8 +883,6 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
     const ctx = audioCtxRef.current;
     if (!analyser || !ctx) return;
 
-    if (ctx.state === 'suspended') void ctx.resume();
-
     const buffer = new Float32Array(analyser.fftSize);
     let framesCollected = 0;
     let frameCounter = 0;
@@ -836,6 +897,12 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
     const loop = () => {
       if (!analyserRef.current || !audioCtxRef.current) return;
+
+      const sample = currentAudioSampleRef.current;
+      if (sample && !sample.paused && !sample.ended) {
+        animFrameRef.current = requestAnimationFrame(loop);
+        return;
+      }
 
       analyser.getFloatTimeDomainData(buffer);
       const rms = calculateRMS(buffer);
@@ -880,6 +947,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
           if (framesCollected >= TOTAL_FRAMES) {
             if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+            setIsListening(false);
 
             const allPitchErrors = [
               ...scalePitchErrorsRef.current,
@@ -959,7 +1027,12 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
       animFrameRef.current = requestAnimationFrame(loop);
     };
-    loop();
+
+    playPianoSample(midMidi, () => {
+      setIsListening(true);
+      if (ctx.state === 'suspended') void ctx.resume();
+      loop();
+    });
   };
 
   const keyboardKeys = Array.from({ length: 49 }, (_, i) => {
@@ -1011,7 +1084,8 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
   if (showIntro) {
     return (
-      <div className="w-full min-h-screen flex items-center justify-center px-4 py-24 sm:py-10 relative z-10">
+      <div className="w-full min-h-screen flex flex-col items-center px-4 relative z-10">
+        <div className="w-full flex-1 flex items-center justify-center py-24 sm:py-10">
         <div
           role="dialog"
           aria-modal="true"
@@ -1041,6 +1115,8 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
             Nie pokazuj ponownie
           </label>
         </div>
+        </div>
+        <AppFooter />
       </div>
     );
   }
@@ -1339,7 +1415,9 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
               POWTÓRZ DŹWIĘK
             </h2>
             <p className="text-sm opacity-80 mt-1">
-              Zaśpiewaj dźwięk na samogłosce <i>a</i>
+              {isListening
+                ? <>Zaśpiewaj dźwięk na samogłosce <i>a</i></>
+                : 'Słuchaj dźwięku wzorcowego...'}
             </p>
           </div>
 
@@ -1593,6 +1671,7 @@ export default function VoiceAnalysis({ onBack, onGoToExercises, initialMode = '
 
         </div>
       )}
+      <AppFooter className="mt-auto [@media(max-height:500px)]:hidden" />
     </div>
   );
 }

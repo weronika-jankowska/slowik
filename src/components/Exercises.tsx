@@ -14,6 +14,7 @@ import ChordExercise from './exercises/ChordExercise';
 import VibratoOnDemandExercise from './exercises/VibratoOnDemandExercise';
 import IntervalsExercise from './exercises/IntervalsExercise';
 import MessaDiVoceExercise from './exercises/MessaDiVoceExercise';
+import AppFooter from './AppFooter';
 
 type ExerciseId =
   | 'prepare' | 'warmup' | 'vibrato-control' | 'stability' | 'range' | 'formant' | 'trill'
@@ -127,8 +128,8 @@ export default function Exercises({ initialExercise = null }: ExercisesProps) {
   }
 
   return (
-    <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white">
-      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 pt-24 sm:pt-16 pb-14 flex flex-col items-center">
+    <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white flex flex-col">
+      <div className="max-w-[1100px] w-full mx-auto px-4 sm:px-8 pt-24 sm:pt-16 pb-14 flex flex-col items-center">
         <h1 className="font-seasons font-normal uppercase text-white text-3xl sm:text-4xl md:text-[44px] tracking-[0.05em] text-center mb-7 mt-1 drop-shadow-sm">
           Ćwiczenia wokalne
         </h1>
@@ -148,6 +149,7 @@ export default function Exercises({ initialExercise = null }: ExercisesProps) {
           ))}
         </div>
       </div>
+      <AppFooter className="mt-auto" />
     </div>
   );
 }

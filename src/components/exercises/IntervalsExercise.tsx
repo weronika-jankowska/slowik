@@ -236,7 +236,7 @@ export default function IntervalsExercise({ onBack }: { onBack: () => void }) {
             </div>
             <button type="button" onClick={() => void begin()} disabled={rangeTooSmall} className={BTN_PRIMARY}>Rozpocznij</button>
           </div>
-          {loadError && <p className="text-[13px] text-rose-700 text-center">Nie udało się wczytać nagrań pianina. Sprawdź, czy pliki są w folderze /piano-mp3.</p>}
+          {loadError && <p className="text-[13px] text-rose-700 text-center">Nie udało się wczytać nagrań pianina. Sprawdź, czy pliki są w folderze /grand-piano.</p>}
         </SetupCard>
       )}
 

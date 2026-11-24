@@ -14,7 +14,6 @@ import {
   saveBest
 } from './exerciseUi';
 import { useTake, type TakeFrame } from '../../hooks/useTake';
-import { playReferenceNote } from '../../utils/noteUtils';
 
 // Przygotowanie do ćwiczeń
 
@@ -24,7 +23,7 @@ type Step =
   | { kind: 'hiss'; title: string; text: string };
 
 /** Faza kroku */
-interface Phase { label: string; seconds: number; hint: string }
+interface Phase { label: string; seconds: number; hint: string; signal?: boolean }
 
 /** Rozmiar koła oddechu: małe (pusto) i pełne. */
 const CIRCLE_MIN = 0.45;
@@ -104,12 +103,12 @@ const STEPS: Step[] = [
   {
     kind: 'phases',
     title: 'Rozciąganie kręgosłupa',
-    text: 'Rozstaw stopy na szerokości bioder. Unieś ręce do góry na wdechu. Na wydechu zegnij całe ciało i opuść swobodnie ręce w kierunku podłogi. Pozostań w tej pozycji i rozluźnij się. Powróć do pozycji stojącej, kręg po kręgu.',
+    text: 'Rozstaw stopy na szerokości bioder. Unieś ręce do góry na wdechu. Na wydechu zegnij całe ciało i opuść swobodnie ręce w kierunku podłogi. Pozostań w tej pozycji i rozluźnij się. Po usłyszeniu dźwięku powróć do pozycji stojącej, kręg po kręgu.',
     phases: [
-      { label: 'Wdech', seconds: 3, hint: 'Weź wdech, unosząc ręce do góry.' },
-      { label: 'Wydech', seconds: 3, hint: 'Wydychaj powietrze, pochyl się do przodu i opuść ręce.' },
-      { label: 'Stop', seconds: 30, hint: 'Zatrzymaj się i rozluźnij.' },
-      { label: 'Powrót', seconds: 3, hint: 'Powoli podnieś się z powrotem, kręg po kręgu.' }
+      { label: 'Wdech', seconds: 3, hint: 'Weź wdech, unosząc ręce do góry' },
+      { label: 'Wydech', seconds: 3, hint: 'Wydychaj powietrze, pochyl się do przodu i opuść ręce' },
+      { label: 'Stop', seconds: 30, hint: 'Zatrzymaj się i rozluźnij', signal: true },
+      { label: 'Powrót', seconds: 5, hint: 'Powoli podnieś się z powrotem, kręg po kręgu' }
     ]
   },
   {
@@ -129,9 +128,9 @@ function stepSeconds(s: Step): number {
 }
 
 /** Bieżąca faza kroku z fazami: indeks, czas od początku fazy. */
-/** Sygnał końca zatrzymania: A4, krótko. */
-const STOP_END_MIDI = 69;
-const STOP_END_MS = 700;
+/** Sygnał końca zatrzymania: krótkie, łagodne piknięcie */
+const SIGNAL_URL = '/sounds/sygnal.wav';
+const END_HINT = 'Rozluźnij się i oddychaj swobodnie';
 
 function phaseAt(phases: Phase[], t: number): { index: number; elapsed: number } {
   let c = t;
@@ -188,7 +187,7 @@ export default function PrepareExercise({ onBack }: { onBack: () => void }) {
     let end = 0;
     for (const p of step.phases) {
       end += p.seconds;
-      if (p.label === 'Stop' && prevT < end && t >= end) { playReferenceNote(STOP_END_MIDI, STOP_END_MS); break; }
+      if (p.signal && prevT < end && t >= end) { const a = new Audio(SIGNAL_URL); a.volume = 0.8; void a.play().catch(() => undefined); break; }
     }
   }, [t, running, step]);
 
@@ -231,8 +230,9 @@ export default function PrepareExercise({ onBack }: { onBack: () => void }) {
   const ph = step.kind === 'phases' ? phaseAt(step.phases, t) : null;
   const phase = step.kind === 'phases' && ph ? (step.phases[ph.index] as Phase) : null;
   const ringFrac = t / Math.max(1, total);
+  // po zakończeniu koło wraca do pełnego rozmiaru
   const scale = step.kind === 'phases' && phase && ph
-    ? (running || t > 0 ? circleScale(phase, ph.elapsed, scaleBefore(step.phases, ph.index)) : CIRCLE_MIN)
+    ? (finished ? 1 : running || t > 0 ? circleScale(phase, ph.elapsed, scaleBefore(step.phases, ph.index)) : CIRCLE_MIN)
     : CIRCLE_MIN;
 
   return (
@@ -263,11 +263,17 @@ export default function PrepareExercise({ onBack }: { onBack: () => void }) {
               <div className="absolute inset-0 rounded-full bg-white/20 border border-white/40" />
               <div
                 className="absolute rounded-full bg-gradient-to-br from-[#ffc2ea] via-[#ff8fcf] to-[#ffb27a] shadow-lg"
-                style={{ width: `${scale * 100}%`, height: `${scale * 100}%`, transition: 'width .12s linear, height .12s linear' }}
+                style={{ width: `${scale * 100}%`, height: `${scale * 100}%`, transition: finished ? 'width 1.2s ease-out, height 1.2s ease-out' : 'width .12s linear, height .12s linear' }}
               />
               <div className="relative flex flex-col items-center text-[#18388f]">
-                <span className="font-seasons text-xl leading-tight">{phase.label}</span>
-                <span className="font-cardo text-sm">{Math.max(0, Math.ceil(phase.seconds - ph.elapsed))} s</span>
+                {finished ? (
+                  <span className="font-seasons text-xl leading-tight">Koniec</span>
+                ) : (
+                  <>
+                    <span className="font-seasons text-xl leading-tight">{phase.label}</span>
+                    <span className="font-cardo text-sm">{Math.max(0, Math.ceil(phase.seconds - ph.elapsed))} s</span>
+                  </>
+                )}
               </div>
             </div>
           ) : (
@@ -285,10 +291,10 @@ export default function PrepareExercise({ onBack }: { onBack: () => void }) {
                 <circle cx="50" cy="50" r="44" fill="none" stroke="url(#prep-ring)" strokeWidth="6" strokeLinecap="round"
                   strokeDasharray={2 * Math.PI * 44} strokeDashoffset={2 * Math.PI * 44 * (1 - Math.min(1, ringFrac))} />
               </svg>
-              <span className="absolute inset-0 flex items-center justify-center font-seasons text-3xl">{remaining} s</span>
+              <span className="absolute inset-0 flex items-center justify-center font-seasons text-3xl">{finished ? 'Koniec' : `${remaining} s`}</span>
             </div>
           )}
-          {phase && <p className="font-cardo text-[16px] text-[#18388f] leading-snug -mt-2 min-h-[1.5em]">{phase.hint}</p>}
+          {phase && <p className="font-cardo text-[16px] text-[#18388f] leading-snug -mt-2 min-h-[1.5em]">{finished ? END_HINT : phase.hint}</p>}
 
           <div className="flex flex-wrap justify-center gap-3">
             {index > 0 && <button type="button" onClick={() => goTo(index - 1)} className={BTN}>Wstecz</button>}

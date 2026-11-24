@@ -124,7 +124,8 @@ export function buildIntervalTimeline(starts: number[], semis: number, ups: bool
         ]
       : [{ t0: t, t1: t + 0.6, midiFrom: a, midiTo: a }];
     const lastHeard = heard[heard.length - 1] as TargetNote;
-    const singT0 = lastHeard.t1 + 0.7;
+    // w kolejnych próbach 3 s na ułożenie interwału w głowie przed śpiewem
+    const singT0 = lastHeard.t1 + (index === 0 ? 0.7 : 3);
     const n1: TargetNote = { t0: singT0, t1: singT0 + NOTE_SEC, midiFrom: a, midiTo: a };
     const n2: TargetNote = { t0: n1.t1 + 0.1, t1: n1.t1 + 0.1 + NOTE_SEC, midiFrom: b, midiTo: b };
     const rep: Rep = { index, offset: a - (starts[0] ?? a), startMidi: a, cue: heard[0] as TargetNote, cueNotes: heard, singT0, singT1: n2.t1, t1: n2.t1 + 1, notes: [n1, n2] };

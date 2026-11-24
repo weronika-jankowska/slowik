@@ -18,6 +18,7 @@ import {
   sprLevel,
   type FormantFeedback
 } from '../../utils/singerFormantExercise';
+import AppFooter from '../AppFooter';
 
 type Phase = 'setup' | 'countdown' | 'sing' | 'result';
 
@@ -295,14 +296,14 @@ export default function SingerFormantExercise({ onBack }: { onBack: () => void }
   const bandLabel = `${SPR_BAND_HZ.lo / 1000}–${SPR_BAND_HZ.hi / 1000} kHz`;
 
   return (
-    <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white select-none">
+    <div className="w-full h-screen overflow-y-auto overflow-x-hidden font-cardo text-white select-none flex flex-col">
       {/* opis formantu śpiewaczego (jak w analizie głosu) */}
       {infoOpen && (
         <div className="fixed inset-0 z-50 flex flex-col px-4 overflow-y-auto" style={{ background: 'rgba(24, 56, 143, 0.35)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }} onClick={(e) => { if (e.target === e.currentTarget) setInfoOpen(false); }}>
           <ParameterInfo id="singerFormant" onClose={() => setInfoOpen(false)} />
         </div>
       )}
-      <div className="max-w-5xl mx-auto min-h-full px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5 relative">
+      <div className="max-w-5xl w-full mx-auto flex-[1_0_auto] px-4 sm:px-8 pt-24 sm:pt-8 pb-8 flex flex-col items-center gap-5 relative">
         <div className="w-full flex justify-end">
           <button
             type="button"
@@ -478,6 +479,7 @@ export default function SingerFormantExercise({ onBack }: { onBack: () => void }
           </div>
         )}
       </div>
+      <AppFooter />
     </div>
   );
 }

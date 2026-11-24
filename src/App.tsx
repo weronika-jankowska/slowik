@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, lazy, Suspense, type ComponentType } from 'react';
 import VoiceAnalysis from './components/VoiceAnalysis';
 import Exercises from './components/Exercises';
+import AppFooter from './components/AppFooter';
 import { navPush, navReplace, useNavListener } from './utils/navHistory';
 
 type View = 'home' | 'analysis' | 'history' | 'exercises' | 'lab';
@@ -126,8 +127,8 @@ export default function App() {
           }`}
         >
           <h1 className="text-4xl md:text-6xl text-white mb-10 text-center drop-shadow-sm">
-            <span className="font-seasons">Witaj w aplikacji </span>
-            <span className="font-seasons italic">Słowik</span>
+            <span className="font-seasons font-light">Witaj w aplikacji </span>
+            <span className="font-seasons font-light italic">Słowik</span>
           </h1>
 
           <div className="flex flex-col gap-4 w-full max-w-md">
@@ -179,6 +180,10 @@ export default function App() {
       {/* Widok 4: Ćwiczenia */}
       {currentView === 'exercises' && (
         <Exercises onBack={() => go('home')} />
+      )}
+
+      {currentView === 'home' && (
+        <AppFooter className={`absolute bottom-0 right-0 transition-opacity duration-700 ${showContent ? 'opacity-100' : 'opacity-0'}`} />
       )}
     </div>
   );

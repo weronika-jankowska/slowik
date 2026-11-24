@@ -36,7 +36,6 @@ type Stage = 'demo' | 'ready' | 'cue' | 'breath' | 'sing' | 'between';
 const MIN_MIDI = 36; // C2
 /** Najwyższy dźwięk ćwiczenia: C6 */
 const MAX_MIDI = 84;
-const RANGE_EXTENSION = 2;
 const LEAD_IN_SEC = 0.4;
 const MOVING_SEMITONES = 0.5;
 
@@ -65,11 +64,15 @@ const TILE_COLOR: Record<string, string> = {
 
 const CELL_CLASS = { hit: 'bg-emerald-500/80', off: 'bg-rose-500/75', silent: 'bg-white/30 border border-dashed border-[#466cd2]/40' } as const;
 
-function defaultRange(mpfr: { lowMidi: number; highMidi: number } | null): [number, number] {
-  if (!mpfr) return [50, 66]; // D3 – F#4
-  const lo = Math.max(MIN_MIDI, Math.round(mpfr.lowMidi) - RANGE_EXTENSION);
-  const hi = Math.min(MAX_MIDI, Math.round(mpfr.highMidi) + RANGE_EXTENSION);
-  return [lo, Math.max(hi, lo + 7)];
+/** Domyślna liczba powtórzeń (krok półtonowy): środek skali, kilka dźwięków w górę i w dół */
+const DEFAULT_REPS = 15;
+
+/** Domyślny zakres: wokół środka skali z analizy głosu, tak by wyszło DEFAULT_REPS powtórzeń */
+function defaultRange(mpfr: { lowMidi: number; highMidi: number } | null, sungSpan: number): [number, number] {
+  const center = mpfr ? (mpfr.lowMidi + mpfr.highMidi) / 2 : 58;
+  const width = sungSpan + (DEFAULT_REPS - 1) / 2;
+  const lo = Math.max(MIN_MIDI, Math.min(MAX_MIDI - width, Math.round(center - width / 2)));
+  return [lo, lo + width];
 }
 
 function stageAt(tl: Timeline, t: number): { stage: Stage; repIndex: number } {
@@ -109,7 +112,10 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
   // „na sylabach „mi-ja”” / „na sylabie „no””
   const syllablesPhrase = syllableOpt ? `${syllableOpt.id === 'mi-ja' ? 'sylabach' : 'sylabie'} ${singText}` : '';
   const vocalHint = syllableOpt?.hint ?? pattern.hint;
-  const [range, setRange] = useState<[number, number]>(() => defaultRange(mpfr));
+  const spanOf = (p: TrillPattern) => { const r = sungRange(p, harmony); return r.high - r.low; };
+  const [range, setRange] = useState<[number, number]>(() => defaultRange(mpfr, spanOf(pattern)));
+  // dopóki zakres nie był zmieniany ręcznie, zmiana wzoru ustawia domyślny zakres dla nowego wzoru
+  const [rangeTouched, setRangeTouched] = useState(false);
   const [step, setStep] = useState<'1' | '2'>('1');
   const stepWord = step === '1' ? 'półton' : 'cały ton';
   const [lowMidi, highMidi] = range;
@@ -168,6 +174,7 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
     if (!p) return;
     stopListening();
     setPatternId(id);
+    if (!rangeTouched) { setRange(defaultRange(mpfr, spanOf(p))); return; }
     setRange(([lo, hi]) => {
       const r = sungRange(p, harmony);
       const span = r.high - r.low;
@@ -481,7 +488,7 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-8">
               <NotePicker
                 midi={lowMidi}
-                onChange={(m) => setRange([m, Math.max(highMidi, m + sungSpan)])}
+                onChange={(m) => { setRangeTouched(true); setRange([m, Math.max(highMidi, m + sungSpan)]); }}
                 min={MIN_MIDI}
                 max={MAX_MIDI - sungSpan}
                 label="Najniższy dźwięk"
@@ -490,7 +497,7 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
               />
               <NotePicker
                 midi={highMidi}
-                onChange={(m) => setRange([Math.min(lowMidi, m - sungSpan), m])}
+                onChange={(m) => { setRangeTouched(true); setRange([Math.min(lowMidi, m - sungSpan), m]); }}
                 min={MIN_MIDI + sungSpan}
                 max={MAX_MIDI}
                 label="Najwyższy dźwięk"
@@ -510,13 +517,13 @@ export default function LipTrillMelody({ mpfr, stageSwitcher, onBack, variant = 
             </div>
             <p className="text-[12px] text-[#466cd2] text-center -mt-1">
               {mpfr
-                ? `Zakres z Twojej analizy głosu: ${midiToNoteName(Math.round(mpfr.lowMidi))} – ${midiToNoteName(Math.round(mpfr.highMidi))}. Domyślnie ćwiczenie sięga o cały ton dalej w obie strony. `
+                ? `Zakres z Twojej analizy głosu: ${midiToNoteName(Math.round(mpfr.lowMidi))} – ${midiToNoteName(Math.round(mpfr.highMidi))}. Domyślnie ćwiczenie obejmuje środek tej skali. `
                 : 'Wykonaj analizę głosu, by dopasować zakres ćwiczenia do swojej skali. '}
               {reps} powtórzeń, ok. {approxSec < 90 ? `${approxSec} s` : `${Math.round(approxSec / 60)} min`}.
             </p>
             {loadError && (
               <p className="text-[13px] text-rose-700 text-center">
-                Nie udało się wczytać nagrań pianina. Sprawdź, czy pliki są w folderze /piano-mp3.
+                Nie udało się wczytać nagrań pianina. Sprawdź, czy pliki są w folderze /grand-piano.
               </p>
             )}
           </div>
